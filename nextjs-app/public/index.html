@@ -1,0 +1,1487 @@
+<!DOCTYPE html>
+<html lang="id" class="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ArchiRender Studio AI — Architectural Presentation & Visualization</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          colors: {
+            studio: {
+              950: '#09090b',
+              900: '#111114',
+              850: '#16161a',
+              800: '#1e1e24',
+              700: '#2a2a32',
+            }
+          }
+        }
+      }
+    };
+  </script>
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 0; background-color: #09090b; color: #f4f4f5; font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+    ::-webkit-scrollbar { width: 6px; height: 6px; }
+    ::-webkit-scrollbar-track { background: #111114; }
+    ::-webkit-scrollbar-thumb { background: #2a2a32; border-radius: 3px; }
+    ::-webkit-scrollbar-thumb:hover { background: #3f3f46; }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+
+  <script type="text/babel">
+    const { useState, useRef, useEffect, useCallback } = React;
+
+    // --- ICONS (Self-contained SVG components) ---
+    const Icon = ({ path, className = "w-4 h-4", viewBox = "0 0 24 24" }) => (
+      <svg className={className} viewBox={viewBox} fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        {path}
+      </svg>
+    );
+
+    const Icons = {
+      Sparkles: (p) => <Icon {...p} path={<><path d="M9.937 15.5A2 2 0 0 0 8.5 14.063l-6.135-1.582a.5.5 0 0 1 0-.962L8.5 9.936A2 2 0 0 0 9.937 8.5l1.582-6.135a.5.5 0 0 1 .963 0L14.063 8.5A2 2 0 0 0 15.5 9.937l6.135 1.581a.5.5 0 0 1 0 .964L15.5 14.063a2 2 0 0 0-1.437 1.437l-1.582 6.135a.5.5 0 0 1-.963 0z"/><path d="M20 3v4"/><path d="M22 5h-4"/></>} />,
+      Upload: (p) => <Icon {...p} path={<><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></>} />,
+      Download: (p) => <Icon {...p} path={<><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></>} />,
+      RefreshCw: (p) => <Icon {...p} path={<><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/></>} />,
+      ArrowRightCircle: (p) => <Icon {...p} path={<><circle cx="12" cy="12" r="10"/><path d="M8 12h8"/><path d="m12 16 4-4-4-4"/></>} />,
+      Code: (p) => <Icon {...p} path={<><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></>} />,
+      Key: (p) => <Icon {...p} path={<><circle cx="7.5" cy="15.5" r="5.5"/><path d="m21 2-9.6 9.6"/><path d="m15.5 7.5 3 3L22 7l-3-3"/></>} />,
+      Scan: (p) => <Icon {...p} path={<><path d="M3 7V5a2 2 0 0 1 2-2h2"/><path d="M17 3h2a2 2 0 0 1 2 2v2"/><path d="M21 17v2a2 2 0 0 1-2 2h-2"/><path d="M7 21H5a2 2 0 0 1-2-2v-2"/><line x1="7" y1="12" x2="17" y2="12"/></>} />,
+      Brush: (p) => <Icon {...p} path={<><path d="m9.06 11.9 8.07-8.06a2.85 2.85 0 1 1 4.03 4.03l-8.06 8.08"/><path d="M7.07 14.94c-1.66 0-3 1.35-3 3.02 0 1.33-2.5 1.52-2 2.02 1.08 1.1 2.49 2.02 4 2.02 2.2 0 4-1.8 4-4.04a3.01 3.01 0 0 0-3-3.02z"/></>} />,
+      Undo: (p) => <Icon {...p} path={<><path d="M3 7v6h6"/><path d="M21 17a9 9 0 0 0-9-9 9 9 0 0 0-6 2.3L3 13"/></>} />,
+      Trash: (p) => <Icon {...p} path={<><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/></>} />,
+      Lock: (p) => <Icon {...p} path={<><rect width="18" height="11" x="3" y="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></>} />,
+      Check: (p) => <Icon {...p} path={<><polyline points="20 6 9 17 4 12"/></>} />,
+      Copy: (p) => <Icon {...p} path={<><rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></>} />,
+      Sliders: (p) => <Icon {...p} path={<><line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/><line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/></>} />,
+      Columns: (p) => <Icon {...p} path={<><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M12 3v18"/></>} />,
+      Maximize: (p) => <Icon {...p} path={<><path d="M8 3H5a2 2 0 0 0-2 2v3"/><path d="M21 8V5a2 2 0 0 0-2-2h-3"/><path d="M3 16v3a2 2 0 0 0 2 2h3"/><path d="M16 21h3a2 2 0 0 0 2-2v-3"/></>} />,
+      Layers: (p) => <Icon {...p} path={<><path d="m12.83 2.18a2 2 0 0 0-1.66 0L2.6 6.08a1 1 0 0 0 0 1.83l8.58 3.91a2 2 0 0 0 1.66 0l8.58-3.9a1 1 0 0 0 0-1.83Z"/><path d="m22 17.65-9.17 4.16a2 2 0 0 1-1.66 0L2 17.65"/><path d="m22 12.65-9.17 4.16a2 2 0 0 1-1.66 0L2 12.65"/></>} />,
+      X: (p) => <Icon {...p} path={<><path d="M18 6 6 18"/><path d="m6 6 12 12"/></>} />,
+    };
+
+    // --- PRESETS DEFINITION ---
+    const PRESETS = [
+      {
+        id: "photorealistic",
+        name: "Photorealistic Render",
+        tag: "Eksterior",
+        desc: "Render eksterior realistik dengan pencahayaan fisik, kaca reflektif & lanskap alami.",
+        buildPrompt: (ctx) =>
+          `Transform this 3D architectural viewport into an ultra-photorealistic architectural photography render. Maintain the EXACT massing, silhouette, roofline, window openings, structural proportions, and camera perspective from the reference image. Apply ${ctx.materialPalette} materials, ${ctx.lighting} lighting with physically accurate soft shadows, realistic glass reflections, detailed tropical/temperate landscaping around the base, subtle atmospheric depth, shot on 24mm tilt-shift architectural lens, 8k photorealistic quality.`
+      },
+      {
+        id: "interior",
+        name: "Interior Render",
+        tag: "Interior",
+        desc: "Render ruang dalam fotorealistik dengan pilihan gaya interior & pencahayaan ruangan.",
+        buildPrompt: (ctx) =>
+          `Transform this 3D interior viewport into a magazine-grade architectural interior photograph in ${ctx.interiorStyle} style. Preserve the EXACT room geometry, ceiling height, walls, window openings, and camera perspective. Lighting mood: ${ctx.interiorLighting}. Apply realistic tactile textures (${ctx.materialPalette}), natural light bounce, soft global illumination, curated designer furniture matching the spatial layout, 24mm architectural interior photography, photorealistic 8k.`
+      },
+      {
+        id: "big_diagram",
+        name: "Diagram BIG Style",
+        tag: "Konsep",
+        desc: "Diagram aksonometrik bersih ala Bjarke Ingels Group dengan panah sirkulasi & anotasi.",
+        buildPrompt: (ctx) =>
+          `Convert this 3D architectural model into a crisp, clean Bjarke Ingels Group (BIG) style architectural concept diagram on a clean light studio background. Keep the exact building geometry and axonometric/perspective angle. Render volumes in matte white and light pastel architectural tones with sharp black vector-like edge outlines. Add clean architectural diagramming elements: orange/red directional circulation arrows, yellow solar orientation arrows (${ctx.orientation}), green terraced roof/program highlights, and clean minimalist technical callout labels for "${ctx.projectTitle}".`
+      },
+      {
+        id: "site_analysis",
+        name: "Maket Site Analysis",
+        tag: "Tapak",
+        desc: "Analisis tapak lengkap dengan jalur matahari, arah angin & callout sistem bangunan.",
+        buildPrompt: (ctx) =>
+          `Create a professional architectural Site Analysis & Physical Massing Model presentation based on the exact building geometry in the reference image. Set the building as a refined white/basswood architectural site model with surrounding context grid. Overlay crisp architectural environmental diagrams: a dotted yellow sun-path arc labeled "MORNING / MIDDAY / AFTERNOON" oriented ${ctx.orientation}, blue curved wind-flow arrows, and 3 clean white architectural callout boxes with thin leader lines highlighting facade shading, green terrace, and natural ventilation for "${ctx.projectTitle}".`
+      },
+      {
+        id: "poster",
+        name: "Poster Arsitektur",
+        tag: "Presentasi",
+        desc: "Papan presentasi kompetisi arsitektur lengkap dengan judul, hero render & mini diagram.",
+        buildPrompt: (ctx) =>
+          `Design a cohesive, award-winning architectural competition presentation board layout featuring the exact building from the reference image as the large central hero photorealistic render (${ctx.lighting}, ${ctx.materialPalette}). Include clean Swiss architectural typography at the top titled "${ctx.projectTitle.toUpperCase()}", a vertical sidebar with 2 small exploded/axonometric analytical diagrams, a minimal site plan key, and subtle grid alignment on a crisp off-white architectural board.`
+      },
+      {
+        id: "maquette",
+        name: "Maket Meja Studio",
+        tag: "Fisik",
+        desc: "Foto makro maket fisik kayu balsa, karton & akrilik di atas meja kerja arsitek.",
+        buildPrompt: (ctx) =>
+          `Transform this 3D architectural model into a macro studio photograph of a handcrafted physical architectural scale model resting on an architect's cutting mat and wooden studio desk. Replicate the exact building geometry using laser-cut basswood, matte white museum board, frosted acrylic glazing, and miniature scale trees/figures. Warm studio desk lamp lighting, shallow depth of field, authentic architectural workshop atmosphere.`
+      },
+      {
+        id: "watercolor",
+        name: "Watercolor & Ink",
+        tag: "Sketsa",
+        desc: "Sketsa tinta arsitektur presisi dengan sapuan cat air ekspresif.",
+        buildPrompt: (ctx) =>
+          `Render this exact 3D architectural view as a hand-drawn architectural ink pen perspective sketch with loose, luminous watercolor washes on cold-press cotton watercolor paper. Maintain accurate architectural linework, structural edges, and perspective from the reference image, with warm sunlit washes, expressive sky gradients, and loose botanical ink accents.`
+      },
+      {
+        id: "axon_exploded",
+        name: "Aksonometri Exploded",
+        tag: "Teknis",
+        desc: "Diagram aksonometri terurai vertikal memisahkan atap, struktur, fasad & lantai.",
+        buildPrompt: (ctx) =>
+          `Create a clean architectural Exploded Axonometric Diagram based on the exact building geometry in the reference image. Separate the building vertically along clean dashed vertical alignment axes with ${ctx.explodedOffset} vertical spacing, isolating: ${ctx.explodedFocus}. Render in crisp technical architectural illustration style with clean linework, subtle materiality (${ctx.materialPalette}), white/light-grey studio background, and neat leader-line annotations.`
+      },
+      {
+        id: "joint_exploded",
+        name: "Joint Detail Exploded",
+        tag: "Detail",
+        desc: "Diagram detail sambungan konstruksi terurai dengan anotasi material & baut/angkur.",
+        buildPrompt: (ctx) =>
+          `Generate a high-precision Architectural Construction Joint Exploded Detail Diagram inspired by the structural system and materials (${ctx.materialPalette}) of the building in the reference image. Focus specifically on: ${ctx.explodedFocus}, separated along crisp dashed assembly axes with ${ctx.explodedOffset} spacing. Show steel plates, timber/concrete joinery, fasteners, thermal insulation, and glazing gaskets in clean technical isometric view with crisp leader-line technical callouts on a clean studio background.`
+      }
+    ];
+
+    const BRUSH_COLORS = [
+      { id: "red", name: "Merah", hex: "#ef4444", role: "Ubah Material / Elemen", defaultNote: "Ubah area bertanda merah menjadi kisi-kisi kayu hangat & beton ekspos" },
+      { id: "blue", name: "Biru", hex: "#3b82f6", role: "Kaca / Kolam Air", defaultNote: "Jadikan area bertanda biru sebagai kaca reflektif jernih / elemen air" },
+      { id: "green", name: "Hijau", hex: "#22c55e", role: "Vegetasi / Taman", defaultNote: "Tambahkan tanaman tropis rimbun & vertical garden pada area hijau" },
+      { id: "yellow", name: "Kuning", hex: "#eab308", role: "Lampu / Pencahayaan", defaultNote: "Tambahkan pencahayaan warm LED 3000K pada area bertanda kuning" },
+      { id: "purple", name: "Ungu", hex: "#a855f7", role: "Hapus / Bersihkan Objek", defaultNote: "Hapus objek pada area bertanda ungu dan rapikan latar belakangnya" },
+    ];
+
+    // --- SAMPLE 3D VIEWPORT GENERATOR (HTML5 Canvas) ---
+    function generateSampleCanvasDataUrl(type) {
+      const canvas = document.createElement("canvas");
+      canvas.width = 960;
+      canvas.height = 640;
+      const ctx = canvas.getContext("2d");
+
+      // Background sky / viewport gradient
+      const bg = ctx.createLinearGradient(0, 0, 0, 640);
+      bg.addColorStop(0, "#dbeafe");
+      bg.addColorStop(0.65, "#f1f5f9");
+      bg.addColorStop(0.65, "#cbd5e1");
+      bg.addColorStop(1, "#94a3b8");
+      ctx.fillStyle = bg;
+      ctx.fillRect(0, 0, 960, 640);
+
+      // SketchUp-style ground axes
+      ctx.lineWidth = 1.5;
+      ctx.strokeStyle = "#ef4444";
+      ctx.beginPath(); ctx.moveTo(80, 460); ctx.lineTo(880, 460); ctx.stroke();
+      ctx.strokeStyle = "#22c55e";
+      ctx.beginPath(); ctx.moveTo(480, 380); ctx.lineTo(340, 620); ctx.stroke();
+      ctx.strokeStyle = "#3b82f6";
+      ctx.beginPath(); ctx.moveTo(480, 120); ctx.lineTo(480, 460); ctx.stroke();
+
+      const drawPoly = (pts, fill, stroke = "#1e293b", lw = 2) => {
+        ctx.beginPath();
+        pts.forEach(([x, y], i) => (i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y)));
+        ctx.closePath();
+        ctx.fillStyle = fill;
+        ctx.fill();
+        ctx.lineWidth = lw;
+        ctx.strokeStyle = stroke;
+        ctx.stroke();
+      };
+
+      if (type === "villa") {
+        // Ground slab
+        drawPoly([[200, 470], [490, 535], [780, 460], [500, 415]], "#e2e8f0");
+        // Lower floor main volume
+        drawPoly([[240, 355], [470, 405], [470, 505], [240, 450]], "#f8fafc");
+        drawPoly([[470, 405], [710, 350], [710, 445], [470, 505]], "#cbd5e1");
+        // Glazing lower floor
+        drawPoly([[265, 375], [445, 415], [445, 495], [265, 452]], "#7dd3fc");
+        drawPoly([[495, 412], [685, 366], [685, 442], [495, 492]], "#38bdf8");
+        // Cantilevered upper floor
+        drawPoly([[200, 235], [460, 285], [460, 380], [200, 325]], "#ffffff");
+        drawPoly([[460, 285], [740, 225], [740, 315], [460, 380]], "#e2e8f0");
+        // Upper roof slab
+        drawPoly([[185, 225], [460, 275], [755, 215], [475, 175]], "#94a3b8");
+        // Upper ribbon window & louvers
+        drawPoly([[220, 255], [440, 298], [440, 355], [220, 310]], "#0284c7");
+        for (let x = 485; x <= 710; x += 22) {
+          const t = (x - 460) / 280;
+          const yTop = 285 - t * 60 + 14;
+          const yBot = 380 - t * 65 - 12;
+          ctx.beginPath(); ctx.moveTo(x, yTop); ctx.lineTo(x, yBot);
+          ctx.strokeStyle = "#475569"; ctx.lineWidth = 3; ctx.stroke();
+        }
+        // Pool massing
+        drawPoly([[490, 535], [780, 460], [835, 495], [555, 580]], "#38bdf8");
+      } else if (type === "tower") {
+        // Podium
+        drawPoly([[260, 440], [480, 495], [700, 435], [480, 390]], "#cbd5e1");
+        drawPoly([[260, 440], [480, 495], [480, 545], [260, 488]], "#e2e8f0");
+        drawPoly([[480, 495], [700, 435], [700, 485], [480, 545]], "#94a3b8");
+        // Stepped tower blocks
+        const tiers = [
+          { y0: 320, y1: 460, wL: 160, wR: 160, cL: "#f8fafc", cR: "#cbd5e1" },
+          { y0: 200, y1: 320, wL: 135, wR: 145, cL: "#e0f2fe", cR: "#bae6fd" },
+          { y0: 95,  y1: 200, wL: 110, wR: 120, cL: "#f8fafc", cR: "#cbd5e1" },
+        ];
+        tiers.forEach((t) => {
+          drawPoly([[480 - t.wL, t.y0 + 30], [480, t.y0 + 65], [480, t.y1 + 35], [480 - t.wL, t.y1]], t.cL);
+          drawPoly([[480, t.y0 + 65], [480 + t.wR, t.y0 + 25], [480 + t.wR, t.y1 - 5], [480, t.y1 + 35]], t.cR);
+          drawPoly([[480 - t.wL, t.y0 + 30], [480, t.y0 + 2], [480 + t.wR, t.y0 + 25], [480, t.y0 + 65]], "#94a3b8");
+          for (let y = t.y0 + 55; y < t.y1; y += 26) {
+            ctx.beginPath(); ctx.moveTo(480 - t.wL, y - 30); ctx.lineTo(480, y + 5); ctx.lineTo(480 + t.wR, y - 35);
+            ctx.strokeStyle = "#64748b"; ctx.lineWidth = 1.2; ctx.stroke();
+          }
+        });
+      } else {
+        // Interior 3D Living Room perspective
+        ctx.fillStyle = "#f1f5f9"; ctx.fillRect(0, 0, 960, 640);
+        // Back wall, ceiling, floor, side walls
+        drawPoly([[180, 110], [780, 110], [780, 450], [180, 450]], "#e2e8f0");
+        drawPoly([[0, 0], [960, 0], [780, 110], [180, 110]], "#f8fafc");
+        drawPoly([[180, 450], [780, 450], [960, 640], [0, 640]], "#cbd5e1");
+        drawPoly([[0, 0], [180, 110], [180, 450], [0, 640]], "#cbd5e1");
+        drawPoly([[780, 110], [960, 0], [960, 640], [780, 450]], "#94a3b8");
+        // Large panoramic window on back wall
+        drawPoly([[240, 150], [560, 150], [560, 420], [240, 420]], "#bae6fd");
+        ctx.beginPath(); ctx.moveTo(400, 150); ctx.lineTo(400, 420); ctx.strokeStyle = "#334155"; ctx.lineWidth = 4; ctx.stroke();
+        // TV / Feature wall panel on right
+        drawPoly([[600, 165], [745, 165], [745, 420], [600, 420]], "#94a3b8");
+        // Sofa massing
+        drawPoly([[240, 425], [530, 425], [560, 495], [210, 495]], "#f8fafc");
+        drawPoly([[210, 495], [560, 495], [560, 535], [210, 535]], "#cbd5e1");
+        // Coffee table
+        drawPoly([[340, 525], [520, 525], [545, 565], [315, 565]], "#e2e8f0");
+      }
+
+      ctx.fillStyle = "rgba(15, 23, 42, 0.72)";
+      ctx.fillRect(16, 16, 250, 30);
+      ctx.fillStyle = "#f8fafc";
+      ctx.font = "bold 12px sans-serif";
+      ctx.fillText(`3D VIEWPORT SAMPLE • ${type.toUpperCase()}`, 28, 35);
+
+      return canvas.toDataURL("image/png");
+    }
+
+    // --- DETECT CLOSEST SUPPORTED ASPECT RATIO ---
+    function getClosestAspectRatio(width, height) {
+      const ratio = width / height;
+      const supported = [
+        { label: "1:1", val: 1 },
+        { label: "4:3", val: 4 / 3 },
+        { label: "3:4", val: 3 / 4 },
+        { label: "16:9", val: 16 / 9 },
+        { label: "9:16", val: 9 / 16 },
+      ];
+      return supported.reduce((prev, curr) =>
+        Math.abs(curr.val - ratio) < Math.abs(prev.val - ratio) ? curr : prev
+      ).label;
+    }
+
+    // --- RELIABLE PNG DOWNLOAD ---
+    function downloadImageReliable(dataUrl, filename = "archirender-output.png", onNotify) {
+      const img = new Image();
+      img.crossOrigin = "anonymous";
+      img.onload = () => {
+        try {
+          const canvas = document.createElement("canvas");
+          canvas.width = img.naturalWidth || img.width;
+          canvas.height = img.naturalHeight || img.height;
+          const ctx = canvas.getContext("2d");
+          ctx.drawImage(img, 0, 0);
+          canvas.toBlob((blob) => {
+            if (!blob) {
+              window.open(dataUrl, "_blank");
+              onNotify?.("Membuka gambar di tab baru untuk disimpan.");
+              return;
+            }
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement("a");
+            a.href = url;
+            a.download = filename;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            setTimeout(() => URL.revokeObjectURL(url), 3000);
+            onNotify?.("Berhasil mengunduh PNG!");
+          }, "image/png");
+        } catch (err) {
+          window.open(dataUrl, "_blank");
+          onNotify?.("Membuka gambar di tab baru untuk disimpan.");
+        }
+      };
+      img.onerror = () => {
+        window.open(dataUrl, "_blank");
+        onNotify?.("Membuka gambar di tab baru.");
+      };
+      img.src = dataUrl;
+    }
+
+    // --- GEMINI API HELPERS ---
+    function parseDataUrl(dataUrl) {
+      const match = dataUrl.match(/^data:(image\/[a-zA-Z0-9.+-]+);base64,(.+)$/);
+      if (!match) throw new Error("Format gambar tidak valid.");
+      return { mimeType: match[1], data: match[2] };
+    }
+
+    async function callGeminiGeometryScan(apiKey, imageDataUrl) {
+      const { mimeType, data } = parseDataUrl(imageDataUrl);
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${encodeURIComponent(apiKey)}`;
+      const prompt = `Analyze this 3D architectural viewport or building image. Return ONLY valid JSON (no markdown fences) with these exact keys:
+{
+  "spaceType": "Exterior" or "Interior",
+  "projection": "e.g., Two-Point Perspective / Axonometric",
+  "massing": "e.g., 2-story cantilevered villa with flat overhanging roof",
+  "lockedElements": "e.g., corner ribbon windows, vertical timber louvers, ground pool terrace",
+  "cameraAngle": "e.g., Eye-level 35-degree corner view"
+}`;
+      const res = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          contents: [{ parts: [{ inlineData: { mimeType, data } }, { text: prompt }] }],
+          generationConfig: { temperature: 0.2 }
+        })
+      });
+      if (!res.ok) {
+        const errText = await res.text();
+        throw new Error(`Scan Geometri gagal (${res.status}): ${errText}`);
+      }
+      const json = await res.json();
+      const rawText = json.candidates?.[0]?.content?.parts?.[0]?.text || "{}";
+      const cleaned = rawText.replace(/```json|```/gi, "").trim();
+      return JSON.parse(cleaned);
+    }
+
+    async function callGeminiImageEdit({ apiKey, referenceDataUrl, overlayMaskDataUrl, promptText, aspectRatio, seed }) {
+      const refPart = parseDataUrl(referenceDataUrl);
+      const parts = [{ inlineData: { mimeType: refPart.mimeType, data: refPart.data } }];
+      if (overlayMaskDataUrl) {
+        const maskPart = parseDataUrl(overlayMaskDataUrl);
+        parts.push({ inlineData: { mimeType: maskPart.mimeType, data: maskPart.data } });
+      }
+      parts.push({ text: promptText });
+
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-image:generateContent?key=${encodeURIComponent(apiKey)}`;
+      const body = {
+        contents: [{ parts }],
+        generationConfig: {
+          responseModalities: ["IMAGE"],
+          imageConfig: { aspectRatio: aspectRatio || "4:3" }
+        }
+      };
+      if (seed && !isNaN(Number(seed))) {
+        body.generationConfig.seed = Number(seed);
+      }
+
+      const res = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body)
+      });
+      if (!res.ok) {
+        const errText = await res.text();
+        throw new Error(`Gemini Image API Error (${res.status}): ${errText}`);
+      }
+      const json = await res.json();
+      const candidateParts = json.candidates?.[0]?.content?.parts || [];
+      const imgPart = candidateParts.find((p) => p.inlineData && p.inlineData.data);
+      if (!imgPart) {
+        throw new Error("Model tidak mengembalikan gambar. Coba sesuaikan prompt atau API key.");
+      }
+      return `data:${imgPart.inlineData.mimeType || "image/png"};base64,${imgPart.inlineData.data}`;
+    }
+
+    // --- MAIN APP COMPONENT ---
+    function ArchiRenderStudio() {
+      const [apiKey, setApiKey] = useState(() => localStorage.getItem("archirender_gemini_key") || "");
+      const [showApiModal, setShowApiModal] = useState(() => !localStorage.getItem("archirender_gemini_key"));
+      const [tempKey, setTempKey] = useState(apiKey);
+
+      const [inputImage, setInputImage] = useState(null);
+      const [inputDims, setInputDims] = useState({ w: 960, h: 640, aspect: "3:2" });
+      const [outputImage, setOutputImage] = useState(null);
+      const [prevOutputImage, setPrevOutputImage] = useState(null);
+
+      const [selectedPreset, setSelectedPreset] = useState("photorealistic");
+      const [projectTitle, setProjectTitle] = useState("TROPICAL CANTILEVER VILLA");
+      const [materialPalette, setMaterialPalette] = useState("Warm Teak Wood, Board-Formed Concrete & Low-E Glass");
+      const [lighting, setLighting] = useState("Golden Hour Late Afternoon");
+      const [orientation, setOrientation] = useState("East-to-West Sun Path (North Up)");
+      const [geometryLock, setGeometryLock] = useState("maximal");
+      const [seedValue, setSeedValue] = useState("42819");
+
+      // Interior specific settings
+      const [interiorStyle, setInteriorStyle] = useState("Warm Japandi");
+      const [interiorLighting, setInteriorLighting] = useState("Warm Cove Lighting 3000K + Soft Daylight");
+
+      // Exploded specific settings
+      const [explodedFocus, setExplodedFocus] = useState("Roof Canopy, Timber Louver Facade, Upper Living Box, Structural Columns & Ground Plinth");
+      const [explodedOffset, setExplodedOffset] = useState("Medium-Wide Architectural Separation");
+
+      // 3D Geometry Scan state
+      const [isScanning, setIsScanning] = useState(false);
+      const [geoData, setGeoData] = useState(null);
+      const [geoLocks, setGeoLocks] = useState({
+        projection: true,
+        massing: true,
+        lockedElements: true,
+        cameraAngle: true
+      });
+
+      // UI & View Modes
+      const [viewMode, setViewMode] = useState("slider"); // slider | side | full
+      const [sliderPos, setSliderPos] = useState(50);
+      const [compareTarget, setCompareTarget] = useState("input"); // input | prevOutput
+      const [isGenerating, setIsGenerating] = useState(false);
+      const [toast, setToast] = useState(null);
+      const [showPromptModal, setShowPromptModal] = useState(false);
+      const [copiedPrompt, setCopiedPrompt] = useState(false);
+
+      // Focused Revision Mode
+      const [revisionText, setRevisionText] = useState("");
+      const [revisionHistory, setRevisionHistory] = useState([]);
+
+      // Color-Coded Brush Inpainting
+      const [brushMode, setBrushMode] = useState(false);
+      const [activeBrushColor, setActiveBrushColor] = useState("red");
+      const [brushSize, setBrushSize] = useState(24);
+      const [brushNotes, setBrushNotes] = useState({
+        red: BRUSH_COLORS[0].defaultNote,
+        blue: BRUSH_COLORS[1].defaultNote,
+        green: BRUSH_COLORS[2].defaultNote,
+        yellow: BRUSH_COLORS[3].defaultNote,
+        purple: BRUSH_COLORS[4].defaultNote,
+      });
+      const [usedColors, setUsedColors] = useState({});
+      const [strokes, setStrokes] = useState([]);
+      const isDrawingRef = useRef(false);
+      const brushCanvasRef = useRef(null);
+
+      // Session History
+      const [history, setHistory] = useState([]);
+
+      const notify = useCallback((msg) => {
+        setToast(msg);
+        setTimeout(() => setToast(null), 3500);
+      }, []);
+
+      const saveApiKey = () => {
+        const cleaned = tempKey.trim();
+        localStorage.setItem("archirender_gemini_key", cleaned);
+        setApiKey(cleaned);
+        setShowApiModal(false);
+        notify("API Key Gemini tersimpan di browser.");
+      };
+
+      // Run Geometry Scan
+      const runGeometryScan = useCallback(async (imgUrl) => {
+        if (!imgUrl || !apiKey) return;
+        setIsScanning(true);
+        try {
+          const result = await callGeminiGeometryScan(apiKey, imgUrl);
+          setGeoData(result);
+          if (result.spaceType && result.spaceType.toLowerCase().includes("interior")) {
+            setSelectedPreset("interior");
+          }
+        } catch (err) {
+          console.warn("Geometry scan skipped:", err.message);
+        } finally {
+          setIsScanning(false);
+        }
+      }, [apiKey]);
+
+      // Load Image (Upload or Sample)
+      const handleLoadInputImage = useCallback((dataUrl, autoScan = true) => {
+        const img = new Image();
+        img.onload = () => {
+          const w = img.naturalWidth || 960;
+          const h = img.naturalHeight || 640;
+          const aspect = getClosestAspectRatio(w, h);
+          setInputDims({ w, h, aspect });
+          setInputImage(dataUrl);
+          setOutputImage(null);
+          setPrevOutputImage(null);
+          setRevisionHistory([]);
+          setStrokes([]);
+          setUsedColors({});
+          setBrushMode(false);
+          if (autoScan && apiKey) {
+            runGeometryScan(dataUrl);
+          }
+        };
+        img.src = dataUrl;
+      }, [apiKey, runGeometryScan]);
+
+      // Load initial sample on mount
+      useEffect(() => {
+        const initialSample = generateSampleCanvasDataUrl("villa");
+        handleLoadInputImage(initialSample, false);
+        setGeoData({
+          spaceType: "Exterior",
+          projection: "Two-Point Architectural Perspective",
+          massing: "2-story cantilevered modern villa with flat overhanging roof slab",
+          lockedElements: "corner floor-to-ceiling glazing, vertical facade louvers, ground terrace & pool",
+          cameraAngle: "Eye-level 35-degree corner view"
+        });
+      }, [handleLoadInputImage]);
+
+      const handleFileUpload = (e) => {
+        const file = e.target.files?.[0];
+        if (!file) return;
+        const reader = new FileReader();
+        reader.onload = () => handleLoadInputImage(reader.result, true);
+        reader.readAsDataURL(file);
+      };
+
+      // Build Engineered Prompt
+      const buildFullPrompt = () => {
+        const presetObj = PRESETS.find((p) => p.id === selectedPreset) || PRESETS[0];
+        const basePrompt = presetObj.buildPrompt({
+          projectTitle,
+          materialPalette,
+          lighting,
+          orientation,
+          interiorStyle,
+          interiorLighting,
+          explodedFocus,
+          explodedOffset,
+        });
+
+        const lockClauses = [];
+        if (geoData) {
+          if (geoLocks.projection && geoData.projection) lockClauses.push(`Projection: ${geoData.projection}`);
+          if (geoLocks.massing && geoData.massing) lockClauses.push(`Massing: ${geoData.massing}`);
+          if (geoLocks.lockedElements && geoData.lockedElements) lockClauses.push(`Preserve elements: ${geoData.lockedElements}`);
+          if (geoLocks.cameraAngle && geoData.cameraAngle) lockClauses.push(`Camera framing: ${geoData.cameraAngle}`);
+        }
+
+        const strictness =
+          geometryLock === "maximal"
+            ? "STRICT STRUCTURAL LOCK (MAXIMUM): Do NOT alter, add, or remove any walls, rooflines, floor levels, window placements, or camera perspective from the first reference image."
+            : "HIGH GEOMETRY CONSISTENCY: Preserve the primary massing, roofline, and perspective of the first reference image while refining architectural details.";
+
+        return `${strictness}\n${lockClauses.length ? `Locked 3D Geometry Scan -> ${lockClauses.join(" | ")}.\n` : ""}${basePrompt}`;
+      };
+
+      // Generate Main Render
+      const handleGenerate = async () => {
+        if (!inputImage) return notify("Silakan unggah atau pilih sample viewport 3D terlebih dahulu.");
+        if (!apiKey) {
+          setShowApiModal(true);
+          return notify("Masukkan Gemini API Key terlebih dahulu.");
+        }
+        setIsGenerating(true);
+        try {
+          const promptText = buildFullPrompt();
+          const resultUrl = await callGeminiImageEdit({
+            apiKey,
+            referenceDataUrl: inputImage,
+            promptText,
+            aspectRatio: inputDims.aspect,
+            seed: seedValue
+          });
+          if (outputImage) setPrevOutputImage(outputImage);
+          setOutputImage(resultUrl);
+          setCompareTarget("input");
+          setSliderPos(50);
+          setHistory((prev) => [
+            {
+              id: Date.now(),
+              presetName: PRESETS.find((p) => p.id === selectedPreset)?.name || "Render",
+              time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+              input: inputImage,
+              output: resultUrl
+            },
+            ...prev.slice(0, 11)
+          ]);
+          notify("Render berhasil dibuat!");
+        } catch (err) {
+          notify(err.message);
+        } finally {
+          setIsGenerating(false);
+        }
+      };
+
+      // Focused Revision (Text or Color-Coded Brush Inpainting)
+      const handleApplyRevision = async (customText = null) => {
+        const baseTarget = outputImage || inputImage;
+        if (!baseTarget) return notify("Belum ada gambar untuk direvisi.");
+        if (!apiKey) {
+          setShowApiModal(true);
+          return notify("Masukkan Gemini API Key terlebih dahulu.");
+        }
+
+        const activeColors = Object.keys(usedColors).filter((c) => usedColors[c]);
+        const hasBrushStrokes = brushMode && activeColors.length > 0 && brushCanvasRef.current;
+        const instruction = (customText ?? revisionText).trim();
+
+        if (!instruction && !hasBrushStrokes) {
+          return notify("Tulis perintah revisi atau coret area warna pada kanvas terlebih dahulu.");
+        }
+
+        setIsGenerating(true);
+        try {
+          let overlayDataUrl = null;
+          let colorPromptLines = [];
+
+          if (hasBrushStrokes) {
+            overlayDataUrl = brushCanvasRef.current.toDataURL("image/png");
+            activeColors.forEach((cid) => {
+              const meta = BRUSH_COLORS.find((b) => b.id === cid);
+              if (meta) {
+                colorPromptLines.push(`- ${meta.name.toUpperCase()} brush zone (${meta.role}): ${brushNotes[cid]}`);
+              }
+            });
+          }
+
+          const revPrompt = hasBrushStrokes
+            ? `DIRECT COLOR-CODED INPAINTING REVISION:
+Image 1 is the current architectural render. Image 2 is a transparent color-coded mask showing the exact regions to modify.
+Apply ONLY the following localized edits strictly inside the painted regions, removing the colored paint strokes seamlessly while keeping all unpainted areas 100% identical in geometry, lighting, and perspective:
+${colorPromptLines.join("\n")}
+${instruction ? `Additional instruction: ${instruction}` : ""}`
+            : `FOCUSED DIRECT IMAGE-TO-IMAGE REVISION:
+Edit the provided architectural image according to this specific instruction ONLY: "${instruction}".
+CRITICAL LOCK: Keep the exact building geometry, camera angle, framing, and all unmentioned elements 100% unchanged.`;
+
+          const revisedUrl = await callGeminiImageEdit({
+            apiKey,
+            referenceDataUrl: baseTarget,
+            overlayMaskDataUrl: overlayDataUrl,
+            promptText: revPrompt,
+            aspectRatio: inputDims.aspect,
+            seed: seedValue
+          });
+
+          setPrevOutputImage(baseTarget);
+          setOutputImage(revisedUrl);
+          setCompareTarget("prevOutput");
+          setSliderPos(50);
+
+          const label = hasBrushStrokes
+            ? `Coretan (${activeColors.map((c) => BRUSH_COLORS.find((b) => b.id === c)?.name).join(", ")})`
+            : instruction;
+
+          setRevisionHistory((prev) => [{ id: Date.now(), label, prevImg: baseTarget }, ...prev]);
+          setRevisionText("");
+          if (hasBrushStrokes) {
+            clearBrushCanvas();
+            setBrushMode(false);
+          }
+          setHistory((prev) => [
+            {
+              id: Date.now(),
+              presetName: `Revisi: ${label.slice(0, 22)}`,
+              time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+              input: baseTarget,
+              output: revisedUrl
+            },
+            ...prev.slice(0, 11)
+          ]);
+          notify("Revisi terfokus berhasil diterapkan!");
+        } catch (err) {
+          notify(err.message);
+        } finally {
+          setIsGenerating(false);
+        }
+      };
+
+      const handleUndoRevision = () => {
+        if (!revisionHistory.length) return;
+        const [latest, ...rest] = revisionHistory;
+        setOutputImage(latest.prevImg);
+        setRevisionHistory(rest);
+        notify("Revisi terakhir dibatalkan (Undo).");
+      };
+
+      // Iterative Workflow: Promote output to new input
+      const handlePromoteOutputToInput = () => {
+        if (!outputImage) return;
+        handleLoadInputImage(outputImage, true);
+        notify("Hasil render dipindahkan menjadi Input 3D baru!");
+      };
+
+      // --- BRUSH CANVAS DRAWING LOGIC ---
+      const redrawStrokes = useCallback((strokeList) => {
+        const canvas = brushCanvasRef.current;
+        if (!canvas) return;
+        const ctx = canvas.getContext("2d");
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        strokeList.forEach((st) => {
+          if (st.points.length < 2) return;
+          ctx.beginPath();
+          ctx.strokeStyle = st.hex;
+          ctx.lineWidth = st.size;
+          ctx.lineCap = "round";
+          ctx.lineJoin = "round";
+          st.points.forEach(([x, y], idx) => (idx === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y)));
+          ctx.stroke();
+        });
+      }, []);
+
+      useEffect(() => {
+        if (brushMode) {
+          redrawStrokes(strokes);
+        }
+      }, [brushMode, strokes, redrawStrokes]);
+
+      const getCanvasCoords = (e) => {
+        const canvas = brushCanvasRef.current;
+        const rect = canvas.getBoundingClientRect();
+        const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+        const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+        return [
+          ((clientX - rect.left) / rect.width) * canvas.width,
+          ((clientY - rect.top) / rect.height) * canvas.height
+        ];
+      };
+
+      const startDraw = (e) => {
+        if (!brushMode) return;
+        isDrawingRef.current = true;
+        const pt = getCanvasCoords(e);
+        const colorObj = BRUSH_COLORS.find((c) => c.id === activeBrushColor);
+        setStrokes((prev) => [...prev, { colorId: activeBrushColor, hex: colorObj.hex, size: brushSize, points: [pt] }]);
+        setUsedColors((prev) => ({ ...prev, [activeBrushColor]: true }));
+      };
+
+      const moveDraw = (e) => {
+        if (!isDrawingRef.current || !brushMode) return;
+        const pt = getCanvasCoords(e);
+        setStrokes((prev) => {
+          const copy = [...prev];
+          const last = { ...copy[copy.length - 1] };
+          last.points = [...last.points, pt];
+          copy[copy.length - 1] = last;
+          return copy;
+        });
+      };
+
+      const endDraw = () => {
+        isDrawingRef.current = false;
+      };
+
+      const undoStroke = () => {
+        setStrokes((prev) => {
+          const next = prev.slice(0, -1);
+          const remaining = {};
+          next.forEach((s) => (remaining[s.colorId] = true));
+          setUsedColors(remaining);
+          return next;
+        });
+      };
+
+      const clearBrushCanvas = () => {
+        setStrokes([]);
+        setUsedColors({});
+        if (brushCanvasRef.current) {
+          const ctx = brushCanvasRef.current.getContext("2d");
+          ctx.clearRect(0, 0, brushCanvasRef.current.width, brushCanvasRef.current.height);
+        }
+      };
+
+      // Comparison slider drag handler
+      const sliderContainerRef = useRef(null);
+      const handleSliderMove = (e) => {
+        if (!sliderContainerRef.current) return;
+        const rect = sliderContainerRef.current.getBoundingClientRect();
+        const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+        const pct = Math.max(0, Math.min(100, ((clientX - rect.left) / rect.width) * 100));
+        setSliderPos(pct);
+      };
+
+      const beforeImage = compareTarget === "prevOutput" && prevOutputImage ? prevOutputImage : inputImage;
+
+      return (
+        <div className="min-h-screen flex flex-col bg-studio-950 text-zinc-100 select-none">
+          {/* Toast Notification */}
+          {toast && (
+            <div className="fixed bottom-5 right-5 z-50 bg-emerald-600 text-white px-4 py-2.5 rounded-xl shadow-2xl text-sm font-medium flex items-center gap-2 border border-emerald-400/30">
+              <Icons.Check className="w-4 h-4" />
+              <span>{toast}</span>
+            </div>
+          )}
+
+          {/* Top Navigation Bar */}
+          <header className="h-14 border-b border-zinc-800 bg-studio-900/90 backdrop-blur px-4 flex items-center justify-between">
+            <div className="flex items-center gap-2.5">
+              <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-amber-500 to-orange-600 flex items-center justify-center shadow-lg shadow-orange-500/20">
+                <Icons.Layers className="w-4 h-4 text-white" />
+              </div>
+              <div>
+                <div className="font-bold text-sm tracking-tight flex items-center gap-2">
+                  <span>ArchiRender Studio AI</span>
+                  <span className="text-[10px] uppercase tracking-wider px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-400 border border-amber-500/30">
+                    PRO v2.5
+                  </span>
+                </div>
+                <p className="text-[11px] text-zinc-400">3D Viewport to Architectural Presentation & Technical Diagrams</p>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => setShowPromptModal(true)}
+                className="px-3 py-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-xs font-medium text-zinc-200 flex items-center gap-1.5 border border-zinc-700 transition"
+              >
+                <Icons.Code className="w-3.5 h-3.5 text-amber-400" />
+                <span>Script Prompt</span>
+              </button>
+              <button
+                onClick={() => { setTempKey(apiKey); setShowApiModal(true); }}
+                className={`px-3 py-1.5 rounded-lg text-xs font-medium flex items-center gap-1.5 border transition ${
+                  apiKey
+                    ? "bg-emerald-500/10 text-emerald-300 border-emerald-500/30 hover:bg-emerald-500/20"
+                    : "bg-amber-500 text-zinc-950 border-amber-400 hover:bg-amber-400"
+                }`}
+              >
+                <Icons.Key className="w-3.5 h-3.5" />
+                <span>{apiKey ? "API Key Aktif" : "Set Gemini API Key"}</span>
+              </button>
+            </div>
+          </header>
+
+          {/* Main 3-Column Studio Workspace */}
+          <div className="flex-1 grid grid-cols-1 lg:grid-cols-12 overflow-hidden">
+            {/* LEFT SIDEBAR: Input, Geometry Scan & Presets */}
+            <aside className="lg:col-span-3 border-r border-zinc-800 bg-studio-900 p-3.5 overflow-y-auto space-y-4 max-h-[calc(100vh-3.5rem)]">
+              {/* 1. Viewport Input */}
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-semibold uppercase tracking-wider text-zinc-400">1. Input Viewport 3D</span>
+                  <span className="text-[11px] text-zinc-500">Rasio {inputDims.aspect}</span>
+                </div>
+
+                <label className="block border border-dashed border-zinc-700 hover:border-amber-500/70 rounded-xl p-3 text-center cursor-pointer bg-studio-850/60 transition">
+                  <input type="file" accept="image/*" onChange={handleFileUpload} className="hidden" />
+                  <div className="flex flex-col items-center gap-1">
+                    <Icons.Upload className="w-5 h-5 text-amber-400" />
+                    <span className="text-xs font-medium text-zinc-200">Unggah Screenshot SketchUp / Rhino</span>
+                    <span className="text-[11px] text-zinc-500">PNG, JPG, WEBP</span>
+                  </div>
+                </label>
+
+                <div className="grid grid-cols-3 gap-1.5">
+                  {["villa", "tower", "interior"].map((smp) => (
+                    <button
+                      key={smp}
+                      onClick={() => handleLoadInputImage(generateSampleCanvasDataUrl(smp), true)}
+                      className="py-1.5 px-2 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-[11px] font-medium text-zinc-300 capitalize border border-zinc-700/80 transition"
+                    >
+                      Sample {smp}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* 2. Pembacaan Geometri 3D */}
+              <div className="p-3 rounded-xl bg-studio-850 border border-zinc-800 space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-semibold text-zinc-200 flex items-center gap-1.5">
+                    <Icons.Scan className="w-3.5 h-3.5 text-cyan-400" />
+                    Pembacaan Geometri 3D
+                  </span>
+                  <button
+                    onClick={() => runGeometryScan(inputImage)}
+                    disabled={isScanning || !inputImage}
+                    className="text-[11px] text-cyan-400 hover:text-cyan-300 disabled:opacity-40"
+                  >
+                    {isScanning ? "Memindai..." : "Scan Ulang"}
+                  </button>
+                </div>
+
+                {geoData ? (
+                  <div className="space-y-1.5 text-[11px]">
+                    {[
+                      { key: "projection", label: "Proyeksi", val: geoData.projection },
+                      { key: "massing", label: "Massa", val: geoData.massing },
+                      { key: "lockedElements", label: "Elemen", val: geoData.lockedElements },
+                      { key: "cameraAngle", label: "Kamera", val: geoData.cameraAngle },
+                    ].map((item) => (
+                      <label key={item.key} className="flex items-start gap-2 p-1.5 rounded bg-zinc-900/80 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={geoLocks[item.key]}
+                          onChange={(e) => setGeoLocks((prev) => ({ ...prev, [item.key]: e.target.checked }))}
+                          className="mt-0.5 accent-cyan-500"
+                        />
+                        <div className="leading-tight">
+                          <span className="text-zinc-400 font-medium">{item.label}: </span>
+                          <span className="text-zinc-200">{item.val}</span>
+                        </div>
+                      </label>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="text-[11px] text-zinc-500">Unggah gambar atau klik Scan Ulang untuk mengunci struktur bangunan.</p>
+                )}
+              </div>
+
+              {/* 3. Preset Arsitektur */}
+              <div className="space-y-2">
+                <span className="text-xs font-semibold uppercase tracking-wider text-zinc-400">2. Pilih Preset Output</span>
+                <div className="space-y-1.5">
+                  {PRESETS.map((preset) => {
+                    const active = selectedPreset === preset.id;
+                    return (
+                      <button
+                        key={preset.id}
+                        onClick={() => setSelectedPreset(preset.id)}
+                        className={`w-full text-left p-2.5 rounded-xl border transition ${
+                          active
+                            ? "bg-amber-500/15 border-amber-500/60 text-white"
+                            : "bg-studio-850/70 border-zinc-800 hover:border-zinc-700 text-zinc-300"
+                        }`}
+                      >
+                        <div className="flex items-center justify-between">
+                          <span className="text-xs font-semibold">{preset.name}</span>
+                          <span className={`text-[10px] px-1.5 py-0.5 rounded ${active ? "bg-amber-500 text-zinc-950 font-bold" : "bg-zinc-800 text-zinc-400"}`}>
+                            {preset.tag}
+                          </span>
+                        </div>
+                        <p className="text-[11px] text-zinc-400 mt-1 line-clamp-2 leading-snug">{preset.desc}</p>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            </aside>
+
+            {/* CENTER CANVAS: Interactive Preview, Before/After Slider & Brush Inpainting */}
+            <main className="lg:col-span-6 flex flex-col bg-studio-950 p-3.5 overflow-y-auto max-h-[calc(100vh-3.5rem)]">
+              {/* Workspace Toolbar */}
+              <div className="flex flex-wrap items-center justify-between gap-2 pb-3 border-b border-zinc-800/80">
+                <div className="flex items-center gap-1 bg-studio-900 p-1 rounded-lg border border-zinc-800">
+                  {[
+                    { id: "slider", label: "Before / After", icon: Icons.Sliders },
+                    { id: "side", label: "Berdampingan", icon: Icons.Columns },
+                    { id: "full", label: "Hasil Penuh", icon: Icons.Maximize },
+                  ].map((m) => {
+                    const IconComp = m.icon;
+                    return (
+                      <button
+                        key={m.id}
+                        onClick={() => setViewMode(m.id)}
+                        className={`px-2.5 py-1 rounded-md text-xs font-medium flex items-center gap-1.5 transition ${
+                          viewMode === m.id ? "bg-zinc-800 text-white shadow" : "text-zinc-400 hover:text-zinc-200"
+                        }`}
+                      >
+                        <IconComp className="w-3.5 h-3.5" />
+                        <span>{m.label}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => setBrushMode((v) => !v)}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-medium flex items-center gap-1.5 border transition ${
+                      brushMode
+                        ? "bg-rose-500/20 text-rose-300 border-rose-500/50"
+                        : "bg-studio-900 text-zinc-300 border-zinc-800 hover:border-zinc-700"
+                    }`}
+                  >
+                    <Icons.Brush className="w-3.5 h-3.5" />
+                    <span>{brushMode ? "Tutup Coretan" : "Edit Coretan Warna"}</span>
+                  </button>
+
+                  {outputImage && (
+                    <button
+                      onClick={() => downloadImageReliable(outputImage, `archirender-${selectedPreset}-${Date.now()}.png`, notify)}
+                      className="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold flex items-center gap-1.5 shadow transition"
+                    >
+                      <Icons.Download className="w-3.5 h-3.5" />
+                      <span>Download PNG</span>
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              {/* Color-Coded Brush Toolbar (visible when brushMode is active) */}
+              {brushMode && (
+                <div className="mt-3 p-3 rounded-xl bg-studio-900 border border-rose-500/30 space-y-2.5">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="flex items-center gap-1.5">
+                      {BRUSH_COLORS.map((c) => (
+                        <button
+                          key={c.id}
+                          onClick={() => setActiveBrushColor(c.id)}
+                          className={`px-2.5 py-1 rounded-lg text-xs font-medium flex items-center gap-1.5 border transition ${
+                            activeBrushColor === c.id ? "bg-zinc-800 border-white text-white" : "bg-zinc-950 border-zinc-800 text-zinc-400"
+                          }`}
+                        >
+                          <span className="w-3 h-3 rounded-full" style={{ backgroundColor: c.hex }} />
+                          <span>{c.name}</span>
+                        </button>
+                      ))}
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <span className="text-[11px] text-zinc-400">Kuas: {brushSize}px</span>
+                      <input
+                        type="range"
+                        min="8"
+                        max="60"
+                        value={brushSize}
+                        onChange={(e) => setBrushSize(Number(e.target.value))}
+                        className="w-20 accent-amber-500"
+                      />
+                      <button onClick={undoStroke} className="p-1.5 rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-300" title="Undo Coretan">
+                        <Icons.Undo className="w-3.5 h-3.5" />
+                      </button>
+                      <button onClick={clearBrushCanvas} className="p-1.5 rounded bg-zinc-800 hover:bg-zinc-700 text-rose-400" title="Hapus Semua Coretan">
+                        <Icons.Trash className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  </div>
+                  <div className="text-[11px] text-zinc-400">
+                    Zona aktif (<span className="text-zinc-200 font-semibold">{BRUSH_COLORS.find((b) => b.id === activeBrushColor)?.role}</span>):
+                    <input
+                      type="text"
+                      value={brushNotes[activeBrushColor]}
+                      onChange={(e) => setBrushNotes((prev) => ({ ...prev, [activeBrushColor]: e.target.value }))}
+                      className="mt-1 w-full bg-zinc-950 border border-zinc-800 rounded-lg px-2.5 py-1.5 text-xs text-zinc-100 focus:outline-none focus:border-amber-500"
+                    />
+                  </div>
+                </div>
+              )}
+
+              {/* Canvas Viewport Area */}
+              <div className="flex-1 flex items-center justify-center my-3 min-h-[360px] bg-studio-900/70 rounded-2xl border border-zinc-800 relative overflow-hidden p-2">
+                {isGenerating && (
+                  <div className="absolute inset-0 z-30 bg-zinc-950/80 backdrop-blur-sm flex flex-col items-center justify-center gap-3">
+                    <div className="w-10 h-10 border-4 border-amber-500 border-t-transparent rounded-full animate-spin" />
+                    <p className="text-sm font-semibold text-amber-300">Merender visual arsitektur dengan Structural Lock...</p>
+                  </div>
+                )}
+
+                {brushMode ? (
+                  <div className="relative max-w-full max-h-full">
+                    <img
+                      src={outputImage || inputImage}
+                      alt="Target Brush Edit"
+                      className="max-h-[460px] w-auto rounded-xl object-contain block"
+                    />
+                    <canvas
+                      ref={brushCanvasRef}
+                      width={inputDims.w}
+                      height={inputDims.h}
+                      onMouseDown={startDraw}
+                      onMouseMove={moveDraw}
+                      onMouseUp={endDraw}
+                      onMouseLeave={endDraw}
+                      onTouchStart={startDraw}
+                      onTouchMove={moveDraw}
+                      onTouchEnd={endDraw}
+                      className="absolute inset-0 w-full h-full cursor-crosshair rounded-xl"
+                    />
+                  </div>
+                ) : !outputImage ? (
+                  <div className="relative">
+                    <img src={inputImage} alt="3D Viewport Input" className="max-h-[460px] w-auto rounded-xl object-contain" />
+                    <span className="absolute bottom-3 left-3 px-2.5 py-1 rounded-md bg-zinc-950/80 text-[11px] font-medium text-zinc-300 border border-zinc-800">
+                      Input 3D Viewport • Klik "Generate Render" untuk memproses
+                    </span>
+                  </div>
+                ) : viewMode === "side" ? (
+                  <div className="grid grid-cols-2 gap-2 w-full h-full items-center">
+                    <div className="relative">
+                      <img src={beforeImage} alt="Before" className="w-full max-h-[440px] object-contain rounded-xl bg-zinc-950" />
+                      <span className="absolute top-2 left-2 px-2 py-0.5 rounded bg-zinc-950/80 text-[10px] text-zinc-300">SEBELUM</span>
+                    </div>
+                    <div className="relative">
+                      <img src={outputImage} alt="After" className="w-full max-h-[440px] object-contain rounded-xl bg-zinc-950" />
+                      <span className="absolute top-2 left-2 px-2 py-0.5 rounded bg-amber-500 text-zinc-950 font-bold text-[10px]">HASIL AI</span>
+                    </div>
+                  </div>
+                ) : viewMode === "full" ? (
+                  <img src={outputImage} alt="Full Render" className="max-h-[460px] w-auto rounded-xl object-contain" />
+                ) : (
+                  /* Interactive Before/After Comparison Slider */
+                  <div
+                    ref={sliderContainerRef}
+                    onMouseMove={(e) => e.buttons === 1 && handleSliderMove(e)}
+                    onMouseDown={handleSliderMove}
+                    onTouchMove={handleSliderMove}
+                    className="relative inline-block cursor-ew-resize overflow-hidden rounded-xl max-h-[460px]"
+                  >
+                    <img src={outputImage} alt="After" className="max-h-[460px] w-auto block object-contain" />
+                    <div
+                      className="absolute inset-0 overflow-hidden"
+                      style={{ clipPath: `inset(0 ${100 - sliderPos}% 0 0)` }}
+                    >
+                      <img src={beforeImage} alt="Before" className="max-h-[460px] w-auto block object-contain" />
+                    </div>
+                    {/* Divider line */}
+                    <div
+                      className="absolute top-0 bottom-0 w-0.5 bg-amber-400 shadow-[0_0_12px_rgba(251,191,36,0.9)]"
+                      style={{ left: `${sliderPos}%` }}
+                    >
+                      <div className="w-7 h-7 rounded-full bg-amber-400 text-zinc-950 font-bold text-xs flex items-center justify-center shadow-lg -translate-x-1/2 absolute top-1/2 -translate-y-1/2">
+                        ⇄
+                      </div>
+                    </div>
+                    <span className="absolute top-3 left-3 px-2 py-0.5 rounded bg-zinc-950/80 text-[10px] font-medium text-zinc-200">
+                      {compareTarget === "prevOutput" ? "SEBELUM REVISI" : "INPUT 3D"}
+                    </span>
+                    <span className="absolute top-3 right-3 px-2 py-0.5 rounded bg-amber-500 text-zinc-950 font-bold text-[10px]">
+                      HASIL AI
+                    </span>
+                  </div>
+                )}
+              </div>
+
+              {/* Iterative Action Bar */}
+              {outputImage && (
+                <div className="flex flex-wrap items-center justify-between gap-2 p-2.5 rounded-xl bg-studio-900 border border-zinc-800">
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={handlePromoteOutputToInput}
+                      className="px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold flex items-center gap-1.5 transition"
+                    >
+                      <Icons.ArrowRightCircle className="w-3.5 h-3.5" />
+                      <span>Lanjut Proses Hasil Ini (Jadikan Input Baru)</span>
+                    </button>
+                    <button
+                      onClick={handleGenerate}
+                      className="px-3 py-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-200 text-xs font-medium flex items-center gap-1.5 border border-zinc-700 transition"
+                    >
+                      <Icons.RefreshCw className="w-3.5 h-3.5" />
+                      <span>Generate Ulang</span>
+                    </button>
+                  </div>
+
+                  {prevOutputImage && (
+                    <div className="flex items-center gap-1 text-[11px]">
+                      <span className="text-zinc-500">Bandingkan:</span>
+                      <button
+                        onClick={() => setCompareTarget("prevOutput")}
+                        className={`px-2 py-1 rounded ${compareTarget === "prevOutput" ? "bg-amber-500/20 text-amber-300" : "text-zinc-400"}`}
+                      >
+                        Vs Sebelum Revisi
+                      </button>
+                      <button
+                        onClick={() => setCompareTarget("input")}
+                        className={`px-2 py-1 rounded ${compareTarget === "input" ? "bg-amber-500/20 text-amber-300" : "text-zinc-400"}`}
+                      >
+                        Vs Input Asli
+                      </button>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Session History Strip */}
+              {history.length > 0 && (
+                <div className="mt-3 space-y-1.5">
+                  <span className="text-[11px] font-semibold uppercase tracking-wider text-zinc-500">Riwayat Sesi ({history.length})</span>
+                  <div className="flex gap-2 overflow-x-auto pb-1">
+                    {history.map((item) => (
+                      <button
+                        key={item.id}
+                        onClick={() => { setInputImage(item.input); setOutputImage(item.output); }}
+                        className="shrink-0 w-28 rounded-lg bg-studio-900 border border-zinc-800 hover:border-amber-500/60 overflow-hidden text-left transition"
+                      >
+                        <img src={item.output} alt={item.presetName} className="w-full h-14 object-cover" />
+                        <div className="p-1.5">
+                          <div className="text-[10px] font-semibold text-zinc-200 truncate">{item.presetName}</div>
+                          <div className="text-[9px] text-zinc-500">{item.time}</div>
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </main>
+
+            {/* RIGHT SIDEBAR: Context Settings, Structural Lock & Focused Revision */}
+            <aside className="lg:col-span-3 border-l border-zinc-800 bg-studio-900 p-3.5 overflow-y-auto space-y-4 max-h-[calc(100vh-3.5rem)]">
+              <div className="space-y-3">
+                <span className="text-xs font-semibold uppercase tracking-wider text-zinc-400">3. Pengaturan Konteks & Kunci</span>
+
+                <div>
+                  <label className="text-[11px] text-zinc-400 block mb-1">Judul Proyek (Poster / Diagram)</label>
+                  <input
+                    type="text"
+                    value={projectTitle}
+                    onChange={(e) => setProjectTitle(e.target.value)}
+                    className="w-full bg-studio-850 border border-zinc-800 rounded-lg px-2.5 py-1.5 text-xs text-zinc-100 focus:outline-none focus:border-amber-500"
+                  />
+                </div>
+
+                <div>
+                  <label className="text-[11px] text-zinc-400 block mb-1">Palet Material Utama</label>
+                  <input
+                    type="text"
+                    value={materialPalette}
+                    onChange={(e) => setMaterialPalette(e.target.value)}
+                    className="w-full bg-studio-850 border border-zinc-800 rounded-lg px-2.5 py-1.5 text-xs text-zinc-100 focus:outline-none focus:border-amber-500"
+                  />
+                </div>
+
+                {selectedPreset === "interior" ? (
+                  <>
+                    <div>
+                      <label className="text-[11px] text-zinc-400 block mb-1">Gaya Desain Interior</label>
+                      <select
+                        value={interiorStyle}
+                        onChange={(e) => setInteriorStyle(e.target.value)}
+                        className="w-full bg-studio-850 border border-zinc-800 rounded-lg px-2.5 py-1.5 text-xs text-zinc-100"
+                      >
+                        <option>Warm Japandi</option>
+                        <option>Luxury Contemporary</option>
+                        <option>Industrial Loft</option>
+                        <option>Tropical Modern Villa</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label className="text-[11px] text-zinc-400 block mb-1">Suasana Pencahayaan Ruangan</label>
+                      <select
+                        value={interiorLighting}
+                        onChange={(e) => setInteriorLighting(e.target.value)}
+                        className="w-full bg-studio-850 border border-zinc-800 rounded-lg px-2.5 py-1.5 text-xs text-zinc-100"
+                      >
+                        <option>Warm Cove Lighting 3000K + Soft Daylight</option>
+                        <option>Natural Morning Sunbeams</option>
+                        <option>Dramatic Evening Ambient Lamps</option>
+                        <option>Soft Diffused Overcast Studio</option>
+                      </select>
+                    </div>
+                  </>
+                ) : selectedPreset === "axon_exploded" || selectedPreset === "joint_exploded" ? (
+                  <>
+                    <div>
+                      <label className="text-[11px] text-zinc-400 block mb-1">Fokus Lapisan / Komponen Terurai</label>
+                      <input
+                        type="text"
+                        value={explodedFocus}
+                        onChange={(e) => setExplodedFocus(e.target.value)}
+                        className="w-full bg-studio-850 border border-zinc-800 rounded-lg px-2.5 py-1.5 text-xs text-zinc-100"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-[11px] text-zinc-400 block mb-1">Jarak Pemisahan (Offset)</label>
+                      <select
+                        value={explodedOffset}
+                        onChange={(e) => setExplodedOffset(e.target.value)}
+                        className="w-full bg-studio-850 border border-zinc-800 rounded-lg px-2.5 py-1.5 text-xs text-zinc-100"
+                      >
+                        <option>Compact Tight Technical Spacing</option>
+                        <option>Medium-Wide Architectural Separation</option>
+                        <option>Wide Exploded Assembly Spacing</option>
+                      </select>
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <div>
+                      <label className="text-[11px] text-zinc-400 block mb-1">Pencahayaan & Suasana</label>
+                      <select
+                        value={lighting}
+                        onChange={(e) => setLighting(e.target.value)}
+                        className="w-full bg-studio-850 border border-zinc-800 rounded-lg px-2.5 py-1.5 text-xs text-zinc-100"
+                      >
+                        <option>Golden Hour Late Afternoon</option>
+                        <option>Bright Tropical Midday Sun</option>
+                        <option>Blue Hour Twilight + Warm Interior Glow</option>
+                        <option>Soft Overcast Architectural Daylight</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label className="text-[11px] text-zinc-400 block mb-1">Orientasi Matahari & Tapak</label>
+                      <input
+                        type="text"
+                        value={orientation}
+                        onChange={(e) => setOrientation(e.target.value)}
+                        className="w-full bg-studio-850 border border-zinc-800 rounded-lg px-2.5 py-1.5 text-xs text-zinc-100"
+                      />
+                    </div>
+                  </>
+                )}
+
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <label className="text-[11px] text-zinc-400 block mb-1 flex items-center gap-1">
+                      <Icons.Lock className="w-3 h-3 text-amber-400" /> Structural Lock
+                    </label>
+                    <select
+                      value={geometryLock}
+                      onChange={(e) => setGeometryLock(e.target.value)}
+                      className="w-full bg-studio-850 border border-zinc-800 rounded-lg px-2 py-1.5 text-xs text-zinc-100"
+                    >
+                      <option value="maximal">Maksimal (100%)</option>
+                      <option value="high">Tinggi (Fleksibel)</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="text-[11px] text-zinc-400 block mb-1">Seed Konsisten</label>
+                    <input
+                      type="number"
+                      value={seedValue}
+                      onChange={(e) => setSeedValue(e.target.value)}
+                      className="w-full bg-studio-850 border border-zinc-800 rounded-lg px-2.5 py-1.5 text-xs text-zinc-100"
+                    />
+                  </div>
+                </div>
+
+                <button
+                  onClick={handleGenerate}
+                  disabled={isGenerating || !inputImage}
+                  className="w-full py-2.5 px-4 rounded-xl bg-gradient-to-r from-amber-500 to-orange-600 hover:from-amber-400 hover:to-orange-500 text-zinc-950 font-bold text-xs flex items-center justify-center gap-2 shadow-lg shadow-orange-500/20 disabled:opacity-50 transition"
+                >
+                  <Icons.Sparkles className="w-4 h-4" />
+                  <span>{isGenerating ? "Sedang Memproses..." : "Generate Visual Sekarang"}</span>
+                </button>
+              </div>
+
+              {/* Focused Revision Panel */}
+              <div className="pt-3 border-t border-zinc-800 space-y-2.5">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-semibold uppercase tracking-wider text-zinc-400">4. Mode Revisi Terfokus</span>
+                  {revisionHistory.length > 0 && (
+                    <button
+                      onClick={handleUndoRevision}
+                      className="text-[11px] text-amber-400 hover:text-amber-300 flex items-center gap-1"
+                    >
+                      <Icons.Undo className="w-3 h-3" /> Undo Revisi
+                    </button>
+                  )}
+                </div>
+
+                <textarea
+                  rows={2}
+                  placeholder="Contoh: Ganti dinding lantai 2 menjadi kayu jati hangat, tambahkan pohon palem di sisi kiri..."
+                  value={revisionText}
+                  onChange={(e) => setRevisionText(e.target.value)}
+                  className="w-full bg-studio-850 border border-zinc-800 rounded-xl p-2.5 text-xs text-zinc-100 placeholder-zinc-500 focus:outline-none focus:border-amber-500"
+                />
+
+                <div className="flex flex-wrap gap-1">
+                  {[
+                    "Ubah ke suasana malam (Blue Hour)",
+                    "Ganti fasad jadi beton ekspos",
+                    "Tambah vegetasi tropis rimbun",
+                  ].map((chip) => (
+                    <button
+                      key={chip}
+                      onClick={() => setRevisionText(chip)}
+                      className="text-[10px] px-2 py-1 rounded-md bg-zinc-800 hover:bg-zinc-700 text-zinc-300 border border-zinc-700/70"
+                    >
+                      + {chip}
+                    </button>
+                  ))}
+                </div>
+
+                <div className="grid grid-cols-2 gap-1.5">
+                  <button
+                    onClick={() => handleApplyRevision()}
+                    disabled={isGenerating}
+                    className="py-2 px-2.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-white font-semibold text-xs border border-zinc-700 transition"
+                  >
+                    Terapkan Revisi
+                  </button>
+                  <button
+                    onClick={() => setBrushMode(true)}
+                    className="py-2 px-2.5 rounded-lg bg-rose-500/15 hover:bg-rose-500/25 text-rose-300 font-semibold text-xs border border-rose-500/30 flex items-center justify-center gap-1 transition"
+                  >
+                    <Icons.Brush className="w-3.5 h-3.5" />
+                    <span>Coret Area</span>
+                  </button>
+                </div>
+
+                {revisionHistory.length > 0 && (
+                  <div className="space-y-1 pt-1">
+                    <span className="text-[10px] text-zinc-500">Riwayat Revisi Aktif:</span>
+                    {revisionHistory.map((r, i) => (
+                      <div key={r.id} className="text-[11px] px-2 py-1 rounded bg-zinc-950 border border-zinc-800/80 text-zinc-300 truncate">
+                        #{revisionHistory.length - i} {r.label}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </aside>
+          </div>
+
+          {/* API Key Modal */}
+          {showApiModal && (
+            <div className="fixed inset-0 z-50 bg-black/75 backdrop-blur-sm flex items-center justify-center p-4">
+              <div className="bg-studio-900 border border-zinc-800 rounded-2xl max-w-md w-full p-5 space-y-4 shadow-2xl">
+                <div className="flex items-center justify-between">
+                  <h3 className="font-bold text-sm flex items-center gap-2">
+                    <Icons.Key className="w-4 h-4 text-amber-400" />
+                    Konfigurasi Gemini API Key
+                  </h3>
+                  <button onClick={() => setShowApiModal(false)} className="text-zinc-400 hover:text-white">
+                    <Icons.X className="w-4 h-4" />
+                  </button>
+                </div>
+                <p className="text-xs text-zinc-400 leading-relaxed">
+                  Masukkan Google AI Studio / Gemini API Key kamu agar fitur Scan Geometri 3D (`gemini-2.5-flash`) dan Render/Inpainting (`gemini-3.1-flash-image`) berjalan langsung di browser. Key disimpan secara lokal di `localStorage` perangkatmu.
+                </p>
+                <input
+                  type="password"
+                  placeholder="AIzaSy..."
+                  value={tempKey}
+                  onChange={(e) => setTempKey(e.target.value)}
+                  className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3 py-2 text-xs text-zinc-100 focus:outline-none focus:border-amber-500"
+                />
+                <div className="flex justify-end gap-2">
+                  <button onClick={() => setShowApiModal(false)} className="px-3 py-1.5 rounded-lg text-xs text-zinc-400 hover:text-white">
+                    Batal
+                  </button>
+                  <button onClick={saveApiKey} className="px-4 py-1.5 rounded-lg bg-amber-500 hover:bg-amber-400 text-zinc-950 font-bold text-xs">
+                    Simpan API Key
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Engineered Prompt Inspector Modal */}
+          {showPromptModal && (
+            <div className="fixed inset-0 z-50 bg-black/75 backdrop-blur-sm flex items-center justify-center p-4">
+              <div className="bg-studio-900 border border-zinc-800 rounded-2xl max-w-xl w-full p-5 space-y-3 shadow-2xl">
+                <div className="flex items-center justify-between">
+                  <h3 className="font-bold text-sm flex items-center gap-2">
+                    <Icons.Code className="w-4 h-4 text-amber-400" />
+                    Engineered Architectural Prompt ({PRESETS.find((p) => p.id === selectedPreset)?.name})
+                  </h3>
+                  <button onClick={() => setShowPromptModal(false)} className="text-zinc-400 hover:text-white">
+                    <Icons.X className="w-4 h-4" />
+                  </button>
+                </div>
+                <pre className="bg-zinc-950 border border-zinc-800 rounded-xl p-3 text-xs text-zinc-300 whitespace-pre-wrap max-h-72 overflow-y-auto font-mono">
+                  {buildFullPrompt()}
+                </pre>
+                <div className="flex justify-end gap-2">
+                  <button
+                    onClick={() => {
+                      navigator.clipboard?.writeText(buildFullPrompt());
+                      setCopiedPrompt(true);
+                      setTimeout(() => setCopiedPrompt(false), 2000);
+                    }}
+                    className="px-3 py-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-xs font-medium text-white flex items-center gap-1.5"
+                  >
+                    <Icons.Copy className="w-3.5 h-3.5" />
+                    <span>{copiedPrompt ? "Tersalin!" : "Salin Prompt"}</span>
+                  </button>
+                  <button onClick={() => setShowPromptModal(false)} className="px-4 py-1.5 rounded-lg bg-amber-500 text-zinc-950 font-bold text-xs">
+                    Tutup
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    const root = ReactDOM.createRoot(document.getElementById("root"));
+    root.render(<ArchiRenderStudio />);
+  </script>
+</body>
+</html>
