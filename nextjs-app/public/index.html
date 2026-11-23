@@ -4,6 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>ArchiRender Studio AI — Architectural Presentation & Visualization</title>
+  <link rel="icon" href="/favicon.ico" sizes="any" />
   <script src="https://cdn.tailwindcss.com"></script>
   <script>
     tailwind.config = {
@@ -28,7 +29,10 @@
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
   <style>
     * { box-sizing: border-box; }
+    html { -webkit-text-size-adjust: 100%; }
     body { margin: 0; background-color: #09090b; color: #f4f4f5; font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+    img { max-width: 100%; }
+    input, textarea, select, pre { -webkit-user-select: text; user-select: text; }
     ::-webkit-scrollbar { width: 6px; height: 6px; }
     ::-webkit-scrollbar-track { background: #111114; }
     ::-webkit-scrollbar-thumb { background: #2a2a32; border-radius: 3px; }
@@ -320,15 +324,106 @@
     }
 
     // --- GEMINI API HELPERS ---
+    const REQUEST_TIMEOUT_MS = 150000; // render 4K bisa lama; jangan menggantung selamanya
+    const MAX_UPLOAD_SIDE = 2048; // sisi terpanjang gambar yang dikirim
+    const MAX_SEND_CHARS = 1600000; // ~1,6 MB base64 per gambar
+    const UPLOAD_JPEG_QUALITY = 0.85;
+
     function parseDataUrl(dataUrl) {
       const match = dataUrl.match(/^data:(image\/[a-zA-Z0-9.+-]+);base64,(.+)$/);
       if (!match) throw new Error("Format gambar tidak valid.");
       return { mimeType: match[1], data: match[2] };
     }
 
-    async function callGeminiGeometryScan(apiKey, imageDataUrl) {
+    function makeAbortError() {
+      const err = new Error("Permintaan dibatalkan.");
+      err.name = "AbortError";
+      return err;
+    }
+
+    // Perkecil/seragamkan gambar sebelum dikirim, supaya tidak kena batas body
+    // server (~4 MB) dan tidak membuang kuota untuk resolusi berlebih.
+    function normalizeImageDataUrl(dataUrl) {
+      return new Promise((resolve) => {
+        const img = new Image();
+        img.onload = () => {
+          const w = img.naturalWidth || 0;
+          const h = img.naturalHeight || 0;
+          if (!w || !h) return resolve({ error: true });
+
+          const scale = Math.min(1, MAX_UPLOAD_SIDE / Math.max(w, h));
+          const needsResize = scale < 1;
+          const needsReencode = dataUrl.length > MAX_SEND_CHARS;
+          if (!needsResize && !needsReencode) {
+            return resolve({ dataUrl, width: w, height: h, resized: false });
+          }
+
+          const targetW = Math.max(1, Math.round(w * scale));
+          const targetH = Math.max(1, Math.round(h * scale));
+          const canvas = document.createElement("canvas");
+          canvas.width = targetW;
+          canvas.height = targetH;
+          const ctx = canvas.getContext("2d");
+          ctx.imageSmoothingQuality = "high";
+          ctx.drawImage(img, 0, 0, targetW, targetH);
+
+          resolve({
+            dataUrl: canvas.toDataURL("image/jpeg", UPLOAD_JPEG_QUALITY),
+            width: targetW,
+            height: targetH,
+            resized: needsResize,
+          });
+        };
+        img.onerror = () => resolve({ error: true });
+        img.src = dataUrl;
+      });
+    }
+
+    async function callGeminiProxy({ model, payload, signal }) {
+      const controller = new AbortController();
+      let timedOut = false;
+
+      const timer = setTimeout(() => {
+        timedOut = true;
+        controller.abort();
+      }, REQUEST_TIMEOUT_MS);
+
+      const forwardAbort = () => controller.abort();
+      if (signal) {
+        if (signal.aborted) controller.abort();
+        else signal.addEventListener("abort", forwardAbort, { once: true });
+      }
+
+      try {
+        const res = await fetch("/api/gemini", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ model, payload }),
+          signal: controller.signal
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          throw new Error(data?.error || `Permintaan ke server gagal (${res.status}).`);
+        }
+        return data;
+      } catch (err) {
+        if (err && err.name === "AbortError") {
+          throw timedOut
+            ? new Error("Server tidak merespons dalam 150 detik. Coba lagi atau turunkan kualitas gambar.")
+            : makeAbortError();
+        }
+        if (err instanceof TypeError) {
+          throw new Error("Tidak dapat menghubungi server. Periksa koneksi lalu coba lagi.");
+        }
+        throw err;
+      } finally {
+        clearTimeout(timer);
+        if (signal) signal.removeEventListener("abort", forwardAbort);
+      }
+    }
+
+    async function callGeminiGeometryScan(imageDataUrl, signal) {
       const { mimeType, data } = parseDataUrl(imageDataUrl);
-      const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${encodeURIComponent(apiKey)}`;
       const prompt = `Analyze this 3D architectural viewport or building image. Return ONLY valid JSON (no markdown fences) with these exact keys:
 {
   "spaceType": "Exterior" or "Interior",
@@ -337,25 +432,20 @@
   "lockedElements": "e.g., corner ribbon windows, vertical timber louvers, ground pool terrace",
   "cameraAngle": "e.g., Eye-level 35-degree corner view"
 }`;
-      const res = await fetch(url, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
+      const json = await callGeminiProxy({
+        model: "gemini-3.5-flash-lite",
+        payload: {
           contents: [{ parts: [{ inlineData: { mimeType, data } }, { text: prompt }] }],
           generationConfig: { temperature: 0.2 }
-        })
+        },
+        signal
       });
-      if (!res.ok) {
-        const errText = await res.text();
-        throw new Error(`Scan Geometri gagal (${res.status}): ${errText}`);
-      }
-      const json = await res.json();
       const rawText = json.candidates?.[0]?.content?.parts?.[0]?.text || "{}";
       const cleaned = rawText.replace(/```json|```/gi, "").trim();
       return JSON.parse(cleaned);
     }
 
-    async function callGeminiImageEdit({ apiKey, referenceDataUrl, overlayMaskDataUrl, promptText, aspectRatio, seed }) {
+    async function callGeminiImageEdit({ referenceDataUrl, overlayMaskDataUrl, promptText, aspectRatio, seed, signal }) {
       const refPart = parseDataUrl(referenceDataUrl);
       const parts = [{ inlineData: { mimeType: refPart.mimeType, data: refPart.data } }];
       if (overlayMaskDataUrl) {
@@ -364,7 +454,6 @@
       }
       parts.push({ text: promptText });
 
-      const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-image:generateContent?key=${encodeURIComponent(apiKey)}`;
       const body = {
         contents: [{ parts }],
         generationConfig: {
@@ -376,16 +465,7 @@
         body.generationConfig.seed = Number(seed);
       }
 
-      const res = await fetch(url, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body)
-      });
-      if (!res.ok) {
-        const errText = await res.text();
-        throw new Error(`Gemini Image API Error (${res.status}): ${errText}`);
-      }
-      const json = await res.json();
+      const json = await callGeminiProxy({ model: "gemini-nano-banana-2.1", payload: body, signal });
       const candidateParts = json.candidates?.[0]?.content?.parts || [];
       const imgPart = candidateParts.find((p) => p.inlineData && p.inlineData.data);
       if (!imgPart) {
@@ -394,12 +474,97 @@
       return `data:${imgPart.inlineData.mimeType || "image/png"};base64,${imgPart.inlineData.data}`;
     }
 
+    // --- RIWAYAT TERSIMPAN (IndexedDB) ---
+    // Riwayat menyimpan gambar base64 yang bisa besar, jadi ditaruh di IndexedDB
+    // (localStorage hanya ~5 MB) agar tetap ada setelah refresh tanpa menahan
+    // semuanya di memori. Jumlah item dibatasi, yang tertua dibuang.
+    const HISTORY_DB_NAME = "archirender-studio";
+    const SESSION_STORE = "sessionHistory";
+    const REVISION_STORE = "revisionHistory";
+    const SESSION_STATE_STORE = "sessionState";
+    const SESSION_STATE_KEY = "current";
+    const MAX_HISTORY_ITEMS = 12;
+    const MAX_REVISION_ITEMS = 10;
+
+    let historyDbPromise = null;
+
+    function openHistoryDb() {
+      if (historyDbPromise) return historyDbPromise;
+      historyDbPromise = new Promise((resolve, reject) => {
+        if (typeof indexedDB === "undefined") {
+          return reject(new Error("IndexedDB tidak tersedia di browser ini."));
+        }
+        // Versi dinaikkan saat menambah object store baru, supaya database
+        // lama milik pengguna ikut di-upgrade tanpa kehilangan riwayat.
+        const request = indexedDB.open(HISTORY_DB_NAME, 2);
+        request.onupgradeneeded = () => {
+          const db = request.result;
+          if (!db.objectStoreNames.contains(SESSION_STORE)) db.createObjectStore(SESSION_STORE, { keyPath: "id" });
+          if (!db.objectStoreNames.contains(REVISION_STORE)) db.createObjectStore(REVISION_STORE, { keyPath: "id" });
+          if (!db.objectStoreNames.contains(SESSION_STATE_STORE)) db.createObjectStore(SESSION_STATE_STORE, { keyPath: "id" });
+        };
+        request.onsuccess = () => resolve(request.result);
+        request.onerror = () => reject(request.error || new Error("IndexedDB tidak bisa dibuka."));
+      }).catch((err) => {
+        historyDbPromise = null; // biar percobaan berikutnya membuka ulang
+        throw err;
+      });
+      return historyDbPromise;
+    }
+
+    async function readStoredItems(storeName) {
+      const db = await openHistoryDb();
+      return new Promise((resolve, reject) => {
+        const request = db.transaction(storeName, "readonly").objectStore(storeName).getAll();
+        request.onsuccess = () => resolve(request.result || []);
+        request.onerror = () => reject(request.error);
+      });
+    }
+
+    async function readStoredItem(storeName, key) {
+      const db = await openHistoryDb();
+      return new Promise((resolve, reject) => {
+        const request = db.transaction(storeName, "readonly").objectStore(storeName).get(key);
+        request.onsuccess = () => resolve(request.result || null);
+        request.onerror = () => reject(request.error);
+      });
+    }
+
+    async function writeStoredItems(storeName, items) {
+      const db = await openHistoryDb();
+      const tx = db.transaction(storeName, "readwrite");
+      const store = tx.objectStore(storeName);
+      store.clear();
+      items.forEach((item) => store.put(item));
+      return new Promise((resolve, reject) => {
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => reject(tx.error);
+        tx.onabort = () => reject(tx.error || new Error("Transaksi IndexedDB dibatalkan."));
+      });
+    }
+
+    async function saveStoredItems(storeName, items, limit) {
+      try {
+        await writeStoredItems(storeName, items.slice(0, limit));
+      } catch (err) {
+        console.warn("[riwayat] gagal menyimpan ke IndexedDB:", err?.message || err);
+        // Kuota browser bisa penuh karena gambar base64: sisakan yang terbaru saja.
+        try {
+          await writeStoredItems(storeName, items.slice(0, 3));
+        } catch (retryErr) {
+          console.warn("[riwayat] penyimpanan cadangan juga gagal:", retryErr?.message || retryErr);
+        }
+      }
+    }
+
+    // Gabungkan item tersimpan dengan yang ada di memori; id terbaru di depan.
+    function mergeStoredItems(stored, current) {
+      const seen = new Set(current.map((item) => item.id));
+      return [...current, ...stored.filter((item) => !seen.has(item.id))].sort((a, b) => b.id - a.id);
+    }
+
     // --- MAIN APP COMPONENT ---
     function ArchiRenderStudio() {
-      const [apiKey, setApiKey] = useState(() => localStorage.getItem("archirender_gemini_key") || "");
-      const [showApiModal, setShowApiModal] = useState(() => !localStorage.getItem("archirender_gemini_key"));
-      const [tempKey, setTempKey] = useState(apiKey);
-
       const [inputImage, setInputImage] = useState(null);
       const [inputDims, setInputDims] = useState({ w: 960, h: 640, aspect: "3:2" });
       const [outputImage, setOutputImage] = useState(null);
@@ -459,29 +624,76 @@
       const [strokes, setStrokes] = useState([]);
       const isDrawingRef = useRef(false);
       const brushCanvasRef = useRef(null);
+      const activeRequestRef = useRef(null);
 
       // Session History
       const [history, setHistory] = useState([]);
+      const [historyHydrated, setHistoryHydrated] = useState(false);
+      const [workingHydrated, setWorkingHydrated] = useState(false);
+      const restoredWorkingRef = useRef(null);
+      const bootstrappedRef = useRef(false);
+
+      // Muat riwayat tersimpan sekali di awal, lalu simpan tiap perubahan.
+      useEffect(() => {
+        let cancelled = false;
+        (async () => {
+          try {
+            const [storedHistory, storedRevisions, storedWorking] = await Promise.all([
+              readStoredItems(SESSION_STORE),
+              readStoredItems(REVISION_STORE),
+              readStoredItem(SESSION_STATE_STORE, SESSION_STATE_KEY).catch(() => null),
+            ]);
+            if (cancelled) return;
+            if (storedWorking) restoredWorkingRef.current = storedWorking;
+            if (storedHistory.length) {
+              setHistory((prev) => mergeStoredItems(storedHistory, prev).slice(0, MAX_HISTORY_ITEMS));
+            }
+            if (storedRevisions.length) {
+              setRevisionHistory((prev) => mergeStoredItems(storedRevisions, prev).slice(0, MAX_REVISION_ITEMS));
+            }
+          } catch (err) {
+            console.warn("[riwayat] gagal memuat IndexedDB:", err?.message || err);
+          } finally {
+            if (!cancelled) setHistoryHydrated(true);
+          }
+        })();
+        return () => {
+          cancelled = true;
+        };
+      }, []);
+
+      useEffect(() => {
+        if (!historyHydrated) return;
+        saveStoredItems(SESSION_STORE, history, MAX_HISTORY_ITEMS);
+      }, [history, historyHydrated]);
+
+      useEffect(() => {
+        if (!historyHydrated) return;
+        saveStoredItems(REVISION_STORE, revisionHistory, MAX_REVISION_ITEMS);
+      }, [revisionHistory, historyHydrated]);
+
+      // Simpan gambar kerja terakhir (input, hasil, dan pembanding) agar sesi
+      // benar-benar pulih setelah refresh, bukan hanya daftar riwayatnya.
+      useEffect(() => {
+        if (!workingHydrated) return;
+        saveStoredItems(
+          SESSION_STATE_STORE,
+          [{ id: SESSION_STATE_KEY, input: inputImage, output: outputImage, prevOutput: prevOutputImage }],
+          1
+        );
+      }, [workingHydrated, inputImage, outputImage, prevOutputImage]);
 
       const notify = useCallback((msg) => {
         setToast(msg);
         setTimeout(() => setToast(null), 3500);
       }, []);
 
-      const saveApiKey = () => {
-        const cleaned = tempKey.trim();
-        localStorage.setItem("archirender_gemini_key", cleaned);
-        setApiKey(cleaned);
-        setShowApiModal(false);
-        notify("API Key Gemini tersimpan di browser.");
-      };
-
       // Run Geometry Scan
       const runGeometryScan = useCallback(async (imgUrl) => {
-        if (!imgUrl || !apiKey) return;
+        if (!imgUrl) return;
         setIsScanning(true);
         try {
-          const result = await callGeminiGeometryScan(apiKey, imgUrl);
+          const result = await callGeminiGeometryScan(imgUrl);
           setGeoData(result);
           if (result.spaceType && result.spaceType.toLowerCase().includes("interior")) {
             setSelectedPreset("interior");
@@ -491,34 +703,63 @@
         } finally {
           setIsScanning(false);
         }
-      }, [apiKey]);
+      }, []);
 
-      // Load Image (Upload or Sample)
-      const handleLoadInputImage = useCallback((dataUrl, autoScan = true) => {
-        const img = new Image();
-        img.onload = () => {
-          const w = img.naturalWidth || 960;
-          const h = img.naturalHeight || 640;
-          const aspect = getClosestAspectRatio(w, h);
-          setInputDims({ w, h, aspect });
-          setInputImage(dataUrl);
-          setOutputImage(null);
-          setPrevOutputImage(null);
-          setRevisionHistory([]);
-          setStrokes([]);
-          setUsedColors({});
-          setBrushMode(false);
-          if (autoScan && apiKey) {
-            runGeometryScan(dataUrl);
-          }
-        };
-        img.src = dataUrl;
-      }, [apiKey, runGeometryScan]);
+      // Baca dimensi gambar agar rasio aspek & kanvas brush ikut gambar yang dimuat
+      const readImageDims = (dataUrl) =>
+        new Promise((resolve) => {
+          const img = new Image();
+          img.onload = () => {
+            const w = img.naturalWidth || 960;
+            const h = img.naturalHeight || 640;
+            resolve({ w, h, aspect: getClosestAspectRatio(w, h) });
+          };
+          img.onerror = () => resolve({ w: 960, h: 640, aspect: "3:2" });
+          img.src = dataUrl;
+        });
 
-      // Load initial sample on mount
+      // Load Image (Upload atau Sample) — gambar dinormalkan lebih dulu
+      const handleLoadInputImage = useCallback(async (dataUrl, autoScan = true, resetRevisions = true) => {
+        const normalized = await normalizeImageDataUrl(dataUrl);
+        if (normalized.error) {
+          return notify("Gambar tidak bisa dibaca. Gunakan format JPG, PNG, atau WEBP.");
+        }
+
+        const { width: w, height: h } = normalized;
+        setInputDims({ w, h, aspect: getClosestAspectRatio(w, h) });
+        setInputImage(normalized.dataUrl);
+        setOutputImage(null);
+        setPrevOutputImage(null);
+        // Saat mount, riwayat revisi tersimpan jangan dihapus oleh sample awal.
+        if (resetRevisions) setRevisionHistory([]);
+        setStrokes([]);
+        setUsedColors({});
+        setBrushMode(false);
+
+        if (normalized.resized) {
+          notify(`Gambar diperkecil ke ${w}×${h} agar lolos batas server dan hemat kuota.`);
+        }
+        if (autoScan) {
+          runGeometryScan(normalized.dataUrl);
+        }
+      }, [runGeometryScan, notify]);
+
+      // Setelah riwayat selesai dimuat: pulihkan gambar kerja terakhir, atau
+      // muat sample awal bila belum ada sesi tersimpan.
       useEffect(() => {
-        const initialSample = generateSampleCanvasDataUrl("villa");
-        handleLoadInputImage(initialSample, false);
+        if (!historyHydrated || bootstrappedRef.current) return;
+        bootstrappedRef.current = true;
+        const stored = restoredWorkingRef.current;
+        restoredWorkingRef.current = null;
+        if (stored && stored.input) {
+          setInputImage(stored.input);
+          setOutputImage(stored.output || null);
+          setPrevOutputImage(stored.prevOutput || null);
+          readImageDims(stored.input).then(setInputDims);
+        } else {
+          const initialSample = generateSampleCanvasDataUrl("villa");
+          handleLoadInputImage(initialSample, false, false);
+        }
         setGeoData({
           spaceType: "Exterior",
           projection: "Two-Point Architectural Perspective",
@@ -526,13 +767,24 @@
           lockedElements: "corner floor-to-ceiling glazing, vertical facade louvers, ground terrace & pool",
           cameraAngle: "Eye-level 35-degree corner view"
         });
-      }, [handleLoadInputImage]);
+        setWorkingHydrated(true);
+      }, [historyHydrated, handleLoadInputImage]);
 
       const handleFileUpload = (e) => {
         const file = e.target.files?.[0];
+        e.target.value = ""; // izinkan memilih file yang sama lagi
         if (!file) return;
+
+        if (file.type && !/^image\/(png|jpe?g|webp)$/i.test(file.type)) {
+          return notify("Format tidak didukung. Gunakan JPG, PNG, atau WEBP (HEIC/HEIF belum bisa dibaca).");
+        }
+        if (file.size > 25 * 1024 * 1024) {
+          return notify("Ukuran file terlalu besar (maksimal 25 MB).");
+        }
+
         const reader = new FileReader();
         reader.onload = () => handleLoadInputImage(reader.result, true);
+        reader.onerror = () => notify("Gagal membaca file gambar.");
         reader.readAsDataURL(file);
       };
 
@@ -569,19 +821,19 @@
       // Generate Main Render
       const handleGenerate = async () => {
         if (!inputImage) return notify("Silakan unggah atau pilih sample viewport 3D terlebih dahulu.");
-        if (!apiKey) {
-          setShowApiModal(true);
-          return notify("Masukkan Gemini API Key terlebih dahulu.");
-        }
+        if (isGenerating) return;
+
+        const controller = new AbortController();
+        activeRequestRef.current = controller;
         setIsGenerating(true);
         try {
           const promptText = buildFullPrompt();
           const resultUrl = await callGeminiImageEdit({
-            apiKey,
             referenceDataUrl: inputImage,
             promptText,
             aspectRatio: inputDims.aspect,
-            seed: seedValue
+            seed: seedValue,
+            signal: controller.signal
           });
           if (outputImage) setPrevOutputImage(outputImage);
           setOutputImage(resultUrl);
@@ -599,20 +851,23 @@
           ]);
           notify("Render berhasil dibuat!");
         } catch (err) {
-          notify(err.message);
+          if (err.name === "AbortError") notify("Render dibatalkan.");
+          else notify(err.message);
         } finally {
+          if (activeRequestRef.current === controller) activeRequestRef.current = null;
           setIsGenerating(false);
         }
+      };
+
+      const handleCancelRequest = () => {
+        if (!activeRequestRef.current) return;
+        activeRequestRef.current.abort();
       };
 
       // Focused Revision (Text or Color-Coded Brush Inpainting)
       const handleApplyRevision = async (customText = null) => {
         const baseTarget = outputImage || inputImage;
         if (!baseTarget) return notify("Belum ada gambar untuk direvisi.");
-        if (!apiKey) {
-          setShowApiModal(true);
-          return notify("Masukkan Gemini API Key terlebih dahulu.");
-        }
 
         const activeColors = Object.keys(usedColors).filter((c) => usedColors[c]);
         const hasBrushStrokes = brushMode && activeColors.length > 0 && brushCanvasRef.current;
@@ -622,6 +877,8 @@
           return notify("Tulis perintah revisi atau coret area warna pada kanvas terlebih dahulu.");
         }
 
+        const controller = new AbortController();
+        activeRequestRef.current = controller;
         setIsGenerating(true);
         try {
           let overlayDataUrl = null;
@@ -648,12 +905,12 @@ Edit the provided architectural image according to this specific instruction ONL
 CRITICAL LOCK: Keep the exact building geometry, camera angle, framing, and all unmentioned elements 100% unchanged.`;
 
           const revisedUrl = await callGeminiImageEdit({
-            apiKey,
             referenceDataUrl: baseTarget,
             overlayMaskDataUrl: overlayDataUrl,
             promptText: revPrompt,
             aspectRatio: inputDims.aspect,
-            seed: seedValue
+            seed: seedValue,
+            signal: controller.signal
           });
 
           setPrevOutputImage(baseTarget);
@@ -665,7 +922,7 @@ CRITICAL LOCK: Keep the exact building geometry, camera angle, framing, and all 
             ? `Coretan (${activeColors.map((c) => BRUSH_COLORS.find((b) => b.id === c)?.name).join(", ")})`
             : instruction;
 
-          setRevisionHistory((prev) => [{ id: Date.now(), label, prevImg: baseTarget }, ...prev]);
+          setRevisionHistory((prev) => [{ id: Date.now(), label, prevImg: baseTarget }, ...prev].slice(0, MAX_REVISION_ITEMS));
           setRevisionText("");
           if (hasBrushStrokes) {
             clearBrushCanvas();
@@ -683,8 +940,10 @@ CRITICAL LOCK: Keep the exact building geometry, camera angle, framing, and all 
           ]);
           notify("Revisi terfokus berhasil diterapkan!");
         } catch (err) {
-          notify(err.message);
+          if (err.name === "AbortError") notify("Revisi dibatalkan.");
+          else notify(err.message);
         } finally {
+          if (activeRequestRef.current === controller) activeRequestRef.current = null;
           setIsGenerating(false);
         }
       };
@@ -695,6 +954,13 @@ CRITICAL LOCK: Keep the exact building geometry, camera angle, framing, and all 
         setOutputImage(latest.prevImg);
         setRevisionHistory(rest);
         notify("Revisi terakhir dibatalkan (Undo).");
+      };
+
+      // Pilih ulang item dari riwayat sesi (dimensi ikut disesuaikan)
+      const handleSelectHistoryItem = async (item) => {
+        setInputImage(item.input);
+        setOutputImage(item.output);
+        setInputDims(await readImageDims(item.input));
       };
 
       // Iterative Workflow: Promote output to new input
@@ -806,7 +1072,7 @@ CRITICAL LOCK: Keep the exact building geometry, camera angle, framing, and all 
           )}
 
           {/* Top Navigation Bar */}
-          <header className="h-14 border-b border-zinc-800 bg-studio-900/90 backdrop-blur px-4 flex items-center justify-between">
+          <header className="sticky top-0 z-40 min-h-14 border-b border-zinc-800 bg-studio-900/95 backdrop-blur px-3 py-2 lg:h-14 lg:px-4 lg:py-0 flex flex-wrap items-center justify-between gap-2">
             <div className="flex items-center gap-2.5">
               <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-amber-500 to-orange-600 flex items-center justify-center shadow-lg shadow-orange-500/20">
                 <Icons.Layers className="w-4 h-4 text-white" />
@@ -818,11 +1084,11 @@ CRITICAL LOCK: Keep the exact building geometry, camera angle, framing, and all 
                     PRO v2.5
                   </span>
                 </div>
-                <p className="text-[11px] text-zinc-400">3D Viewport to Architectural Presentation & Technical Diagrams</p>
+                <p className="hidden sm:block text-[11px] text-zinc-400">3D Viewport to Architectural Presentation & Technical Diagrams</p>
               </div>
             </div>
 
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2">
               <button
                 onClick={() => setShowPromptModal(true)}
                 className="px-3 py-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-xs font-medium text-zinc-200 flex items-center gap-1.5 border border-zinc-700 transition"
@@ -830,24 +1096,17 @@ CRITICAL LOCK: Keep the exact building geometry, camera angle, framing, and all 
                 <Icons.Code className="w-3.5 h-3.5 text-amber-400" />
                 <span>Script Prompt</span>
               </button>
-              <button
-                onClick={() => { setTempKey(apiKey); setShowApiModal(true); }}
-                className={`px-3 py-1.5 rounded-lg text-xs font-medium flex items-center gap-1.5 border transition ${
-                  apiKey
-                    ? "bg-emerald-500/10 text-emerald-300 border-emerald-500/30 hover:bg-emerald-500/20"
-                    : "bg-amber-500 text-zinc-950 border-amber-400 hover:bg-amber-400"
-                }`}
-              >
-                <Icons.Key className="w-3.5 h-3.5" />
-                <span>{apiKey ? "API Key Aktif" : "Set Gemini API Key"}</span>
-              </button>
+              <div className="px-2 sm:px-3 py-1.5 rounded-lg bg-emerald-500/10 text-emerald-300 text-xs font-medium flex items-center gap-1.5 border border-emerald-500/30">
+                <Icons.Lock className="w-3.5 h-3.5" />
+                <span className="hidden sm:inline">API Key di Server</span>
+              </div>
             </div>
           </header>
 
           {/* Main 3-Column Studio Workspace */}
-          <div className="flex-1 grid grid-cols-1 lg:grid-cols-12 overflow-hidden">
+          <div className="flex-1 grid grid-cols-1 lg:grid-cols-12 lg:overflow-hidden">
             {/* LEFT SIDEBAR: Input, Geometry Scan & Presets */}
-            <aside className="lg:col-span-3 border-r border-zinc-800 bg-studio-900 p-3.5 overflow-y-auto space-y-4 max-h-[calc(100vh-3.5rem)]">
+            <aside className="lg:col-span-3 border-b lg:border-b-0 lg:border-r border-zinc-800 bg-studio-900 p-3.5 space-y-4 lg:overflow-y-auto lg:max-h-[calc(100vh-3.5rem)]">
               {/* 1. Viewport Input */}
               <div className="space-y-2">
                 <div className="flex items-center justify-between">
@@ -923,14 +1182,14 @@ CRITICAL LOCK: Keep the exact building geometry, camera angle, framing, and all 
               {/* 3. Preset Arsitektur */}
               <div className="space-y-2">
                 <span className="text-xs font-semibold uppercase tracking-wider text-zinc-400">2. Pilih Preset Output</span>
-                <div className="space-y-1.5">
+                <div className="flex gap-1.5 overflow-x-auto pb-1 snap-x md:grid md:grid-cols-2 md:overflow-visible md:pb-0 lg:block">
                   {PRESETS.map((preset) => {
                     const active = selectedPreset === preset.id;
                     return (
                       <button
                         key={preset.id}
                         onClick={() => setSelectedPreset(preset.id)}
-                        className={`w-full text-left p-2.5 rounded-xl border transition ${
+                        className={`w-44 shrink-0 snap-start text-left p-2.5 rounded-xl border transition md:w-full md:shrink lg:w-full ${
                           active
                             ? "bg-amber-500/15 border-amber-500/60 text-white"
                             : "bg-studio-850/70 border-zinc-800 hover:border-zinc-700 text-zinc-300"
@@ -951,10 +1210,10 @@ CRITICAL LOCK: Keep the exact building geometry, camera angle, framing, and all 
             </aside>
 
             {/* CENTER CANVAS: Interactive Preview, Before/After Slider & Brush Inpainting */}
-            <main className="lg:col-span-6 flex flex-col bg-studio-950 p-3.5 overflow-y-auto max-h-[calc(100vh-3.5rem)]">
+            <main className="lg:col-span-6 flex flex-col bg-studio-950 p-3.5 overflow-visible max-h-none lg:overflow-y-auto lg:max-h-[calc(100vh-3.5rem)]">
               {/* Workspace Toolbar */}
               <div className="flex flex-wrap items-center justify-between gap-2 pb-3 border-b border-zinc-800/80">
-                <div className="flex items-center gap-1 bg-studio-900 p-1 rounded-lg border border-zinc-800">
+                <div className="flex flex-wrap items-center gap-1 bg-studio-900 p-1 rounded-lg border border-zinc-800">
                   {[
                     { id: "slider", label: "Before / After", icon: Icons.Sliders },
                     { id: "side", label: "Berdampingan", icon: Icons.Columns },
@@ -1005,7 +1264,7 @@ CRITICAL LOCK: Keep the exact building geometry, camera angle, framing, and all 
               {brushMode && (
                 <div className="mt-3 p-3 rounded-xl bg-studio-900 border border-rose-500/30 space-y-2.5">
                   <div className="flex flex-wrap items-center justify-between gap-2">
-                    <div className="flex items-center gap-1.5">
+                    <div className="flex flex-wrap items-center gap-1.5">
                       {BRUSH_COLORS.map((c) => (
                         <button
                           key={c.id}
@@ -1050,11 +1309,17 @@ CRITICAL LOCK: Keep the exact building geometry, camera angle, framing, and all 
               )}
 
               {/* Canvas Viewport Area */}
-              <div className="flex-1 flex items-center justify-center my-3 min-h-[360px] bg-studio-900/70 rounded-2xl border border-zinc-800 relative overflow-hidden p-2">
+              <div className="flex-1 flex items-center justify-center my-3 min-h-[240px] sm:min-h-[360px] bg-studio-900/70 rounded-2xl border border-zinc-800 relative overflow-hidden p-2">
                 {isGenerating && (
                   <div className="absolute inset-0 z-30 bg-zinc-950/80 backdrop-blur-sm flex flex-col items-center justify-center gap-3">
                     <div className="w-10 h-10 border-4 border-amber-500 border-t-transparent rounded-full animate-spin" />
                     <p className="text-sm font-semibold text-amber-300">Merender visual arsitektur dengan Structural Lock...</p>
+                    <button
+                      onClick={handleCancelRequest}
+                      className="mt-1 px-4 py-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-200 text-xs font-semibold border border-zinc-600 transition"
+                    >
+                      Batalkan
+                    </button>
                   </div>
                 )}
 
@@ -1063,7 +1328,7 @@ CRITICAL LOCK: Keep the exact building geometry, camera angle, framing, and all 
                     <img
                       src={outputImage || inputImage}
                       alt="Target Brush Edit"
-                      className="max-h-[460px] w-auto rounded-xl object-contain block"
+                      className="max-h-[460px] max-w-full w-auto rounded-xl object-contain block"
                     />
                     <canvas
                       ref={brushCanvasRef}
@@ -1076,18 +1341,18 @@ CRITICAL LOCK: Keep the exact building geometry, camera angle, framing, and all 
                       onTouchStart={startDraw}
                       onTouchMove={moveDraw}
                       onTouchEnd={endDraw}
-                      className="absolute inset-0 w-full h-full cursor-crosshair rounded-xl"
+                      className="absolute inset-0 w-full h-full cursor-crosshair rounded-xl touch-none"
                     />
                   </div>
                 ) : !outputImage ? (
-                  <div className="relative">
-                    <img src={inputImage} alt="3D Viewport Input" className="max-h-[460px] w-auto rounded-xl object-contain" />
+                  <div className="relative max-w-full">
+                    <img src={inputImage} alt="3D Viewport Input" className="max-h-[460px] max-w-full w-auto rounded-xl object-contain" />
                     <span className="absolute bottom-3 left-3 px-2.5 py-1 rounded-md bg-zinc-950/80 text-[11px] font-medium text-zinc-300 border border-zinc-800">
                       Input 3D Viewport • Klik "Generate Render" untuk memproses
                     </span>
                   </div>
                 ) : viewMode === "side" ? (
-                  <div className="grid grid-cols-2 gap-2 w-full h-full items-center">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 w-full h-full items-center">
                     <div className="relative">
                       <img src={beforeImage} alt="Before" className="w-full max-h-[440px] object-contain rounded-xl bg-zinc-950" />
                       <span className="absolute top-2 left-2 px-2 py-0.5 rounded bg-zinc-950/80 text-[10px] text-zinc-300">SEBELUM</span>
@@ -1098,15 +1363,16 @@ CRITICAL LOCK: Keep the exact building geometry, camera angle, framing, and all 
                     </div>
                   </div>
                 ) : viewMode === "full" ? (
-                  <img src={outputImage} alt="Full Render" className="max-h-[460px] w-auto rounded-xl object-contain" />
+                  <img src={outputImage} alt="Full Render" className="max-h-[460px] max-w-full w-auto rounded-xl object-contain" />
                 ) : (
                   /* Interactive Before/After Comparison Slider */
                   <div
                     ref={sliderContainerRef}
                     onMouseMove={(e) => e.buttons === 1 && handleSliderMove(e)}
                     onMouseDown={handleSliderMove}
+                    onTouchStart={handleSliderMove}
                     onTouchMove={handleSliderMove}
-                    className="relative inline-block cursor-ew-resize overflow-hidden rounded-xl max-h-[460px]"
+                    className="relative inline-block cursor-ew-resize overflow-hidden rounded-xl max-h-[460px] max-w-full touch-none"
                   >
                     <img src={outputImage} alt="After" className="max-h-[460px] w-auto block object-contain" />
                     <div
@@ -1137,7 +1403,7 @@ CRITICAL LOCK: Keep the exact building geometry, camera angle, framing, and all 
               {/* Iterative Action Bar */}
               {outputImage && (
                 <div className="flex flex-wrap items-center justify-between gap-2 p-2.5 rounded-xl bg-studio-900 border border-zinc-800">
-                  <div className="flex items-center gap-2">
+                  <div className="flex flex-wrap items-center gap-2">
                     <button
                       onClick={handlePromoteOutputToInput}
                       className="px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold flex items-center gap-1.5 transition"
@@ -1182,7 +1448,7 @@ CRITICAL LOCK: Keep the exact building geometry, camera angle, framing, and all 
                     {history.map((item) => (
                       <button
                         key={item.id}
-                        onClick={() => { setInputImage(item.input); setOutputImage(item.output); }}
+                        onClick={() => handleSelectHistoryItem(item)}
                         className="shrink-0 w-28 rounded-lg bg-studio-900 border border-zinc-800 hover:border-amber-500/60 overflow-hidden text-left transition"
                       >
                         <img src={item.output} alt={item.presetName} className="w-full h-14 object-cover" />
@@ -1198,7 +1464,7 @@ CRITICAL LOCK: Keep the exact building geometry, camera angle, framing, and all 
             </main>
 
             {/* RIGHT SIDEBAR: Context Settings, Structural Lock & Focused Revision */}
-            <aside className="lg:col-span-3 border-l border-zinc-800 bg-studio-900 p-3.5 overflow-y-auto space-y-4 max-h-[calc(100vh-3.5rem)]">
+            <aside className="lg:col-span-3 border-t lg:border-t-0 lg:border-l border-zinc-800 bg-studio-900 p-3.5 space-y-4 lg:overflow-y-auto lg:max-h-[calc(100vh-3.5rem)]">
               <div className="space-y-3">
                 <span className="text-xs font-semibold uppercase tracking-wider text-zinc-400">3. Pengaturan Konteks & Kunci</span>
 
@@ -1406,45 +1672,10 @@ CRITICAL LOCK: Keep the exact building geometry, camera angle, framing, and all 
             </aside>
           </div>
 
-          {/* API Key Modal */}
-          {showApiModal && (
-            <div className="fixed inset-0 z-50 bg-black/75 backdrop-blur-sm flex items-center justify-center p-4">
-              <div className="bg-studio-900 border border-zinc-800 rounded-2xl max-w-md w-full p-5 space-y-4 shadow-2xl">
-                <div className="flex items-center justify-between">
-                  <h3 className="font-bold text-sm flex items-center gap-2">
-                    <Icons.Key className="w-4 h-4 text-amber-400" />
-                    Konfigurasi Gemini API Key
-                  </h3>
-                  <button onClick={() => setShowApiModal(false)} className="text-zinc-400 hover:text-white">
-                    <Icons.X className="w-4 h-4" />
-                  </button>
-                </div>
-                <p className="text-xs text-zinc-400 leading-relaxed">
-                  Masukkan Google AI Studio / Gemini API Key kamu agar fitur Scan Geometri 3D (`gemini-2.5-flash`) dan Render/Inpainting (`gemini-3.1-flash-image`) berjalan langsung di browser. Key disimpan secara lokal di `localStorage` perangkatmu.
-                </p>
-                <input
-                  type="password"
-                  placeholder="AIzaSy..."
-                  value={tempKey}
-                  onChange={(e) => setTempKey(e.target.value)}
-                  className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3 py-2 text-xs text-zinc-100 focus:outline-none focus:border-amber-500"
-                />
-                <div className="flex justify-end gap-2">
-                  <button onClick={() => setShowApiModal(false)} className="px-3 py-1.5 rounded-lg text-xs text-zinc-400 hover:text-white">
-                    Batal
-                  </button>
-                  <button onClick={saveApiKey} className="px-4 py-1.5 rounded-lg bg-amber-500 hover:bg-amber-400 text-zinc-950 font-bold text-xs">
-                    Simpan API Key
-                  </button>
-                </div>
-              </div>
-            </div>
-          )}
-
           {/* Engineered Prompt Inspector Modal */}
           {showPromptModal && (
             <div className="fixed inset-0 z-50 bg-black/75 backdrop-blur-sm flex items-center justify-center p-4">
-              <div className="bg-studio-900 border border-zinc-800 rounded-2xl max-w-xl w-full p-5 space-y-3 shadow-2xl">
+              <div className="bg-studio-900 border border-zinc-800 rounded-2xl max-w-xl w-full p-4 sm:p-5 space-y-3 shadow-2xl max-h-[90vh] overflow-y-auto">
                 <div className="flex items-center justify-between">
                   <h3 className="font-bold text-sm flex items-center gap-2">
                     <Icons.Code className="w-4 h-4 text-amber-400" />

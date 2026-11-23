@@ -1,0 +1,23 @@
+# dependencies
+node_modules/
+.pnp
+.pnp.js
+
+# next.js build output
+.next/
+out/
+build/
+dist/
+next-env.d.ts
+
+# environment — semua variasi .env* diabaikan, template tetap ikut
+.env*
+!.env.example
+
+# hosting
+.vercel
+.netlify
+
+# misc
+.DS_Store
+*.log
