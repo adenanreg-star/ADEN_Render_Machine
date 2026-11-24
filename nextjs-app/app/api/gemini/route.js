@@ -2,7 +2,6 @@ import { NextResponse } from "next/server";
 
 import { generateTextWithFallback } from "../../../lib/ai-text-fallback.js";
 import { generateImageWithCloudflare } from "../../../lib/cloudflare-image.js";
-import { generateImageWithOpenAi } from "../../../lib/openai-image.js";
 import { consume, sharedStoreEnabled } from "../../../lib/rate-limit-store.js";
 
 // ---------------------------------------------------------------------------
@@ -57,7 +56,6 @@ function imageFallbackHeader() {
   const cloudflare = accountId && apiToken ? "ready" : accountId || apiToken ? "incomplete" : "missing";
   return [
     `gemini=${envIsSet("GEMINI_API_KEY") ? "ready" : "missing"}`,
-    `openai=${envIsSet("OPENAI_API_KEY") ? "ready" : "missing"}`,
     `cloudflare=${cloudflare}`,
     `cf-account-id=${accountId ? "set" : "unset"}`,
     `cf-api-token=${apiToken ? "set" : "unset"}`,
@@ -336,9 +334,9 @@ async function handlePost(req) {
 
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${body.model}:generateContent?key=${encodeURIComponent(apiKey)}`;
 
-  // Model gambar: Gemini tetap utama, lalu OpenAI, lalu Cloudflare Workers AI
-  // bila penyedia sebelumnya menolak (misalnya 429 karena kuota gambar free
-  // tier habis atau saldo OpenAI kosong). Penyedia tanpa secret dilewati.
+  // Model gambar: Gemini tetap utama, lalu Cloudflare Workers AI bila Gemini
+  // menolak (misalnya 429 karena kuota gambar free tier habis). Penyedia tanpa
+  // secret dilewati.
   let geminiError = null;
   let geminiStatus = 502;
   try {
@@ -360,22 +358,6 @@ async function handlePost(req) {
 
   const failures = [geminiError];
   let fallbackUsed = false;
-
-  const openAiKey = process.env.OPENAI_API_KEY;
-  if (openAiKey) {
-    fallbackUsed = true;
-    const fallback = await generateImageWithOpenAi({
-      payload: sanitized.payload,
-      apiKey: openAiKey,
-      signal: req.signal,
-    });
-    if (!fallback.error) {
-      return NextResponse.json(fallback.data, {
-        headers: { "x-ai-provider": fallback.provider },
-      });
-    }
-    failures.push(`openai: ${fallback.error}`);
-  }
 
   const cfAccountId = process.env.CF_ACCOUNT_ID;
   const cfApiToken = process.env.CF_API_TOKEN;
