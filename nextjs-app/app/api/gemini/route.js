@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 
 import { generateTextWithFallback } from "../../../lib/ai-text-fallback.js";
 import { generateImageWithCloudflare } from "../../../lib/cloudflare-image.js";
-import { consume, sharedStoreEnabled } from "../../../lib/rate-limit-store.js";
+import { consume } from "../../../lib/rate-limit-store.js";
 
 // ---------------------------------------------------------------------------
 // Batas keras untuk endpoint publik ini.
@@ -62,15 +62,9 @@ function imageFallbackHeader() {
   ].join(", ");
 }
 
-if (!sharedStoreEnabled) {
-  console.warn(
-    "[api/gemini] Store bersama belum dikonfigurasi (UPSTASH_REDIS_REST_URL/TOKEN atau KV_REST_API_URL/TOKEN); batas hanya berlaku per instance."
-  );
-}
-
 // ---------------------------------------------------------------------------
-// Batas pemakaian per IP. Dihitung di store bersama (Redis REST) bila
-// dikonfigurasi, sehingga berlaku lintas instance serverless.
+// Batas pemakaian per IP. Dihitung di D1 (binding `DB`) sehingga berlaku
+// lintas instance serverless, bukan hanya per isolate.
 // ---------------------------------------------------------------------------
 const RATE_LIMIT_MAX_REQUESTS = positiveInt(process.env.RATE_LIMIT_MAX_REQUESTS, 30);
 const RATE_LIMIT_WINDOW_SECONDS = positiveInt(process.env.RATE_LIMIT_WINDOW_SECONDS, 600);
@@ -79,10 +73,16 @@ const DAY_SECONDS = 24 * 60 * 60;
 
 const isPlainObject = (value) => !!value && typeof value === "object" && !Array.isArray(value);
 
+// Cloudflare menimpa `CF-Connecting-IP` dengan IP klien yang sebenarnya di
+// edge, jadi nilai ini tidak bisa dipalsukan dari browser. Header lain hanya
+// dipakai bila aplikasi dijalankan di luar Cloudflare (mis. next dev lokal),
+// dan sengaja diabaikan `x-forwarded-for` yang bisa dikirim klien sendiri.
 function getClientIp(req) {
-  const forwarded = req.headers.get("x-forwarded-for");
-  if (forwarded) return forwarded.split(",")[0].trim();
-  return req.headers.get("x-real-ip") || "unknown";
+  const connectingIp = (req.headers.get("cf-connecting-ip") || "").trim();
+  if (connectingIp) return connectingIp;
+  const realIp = (req.headers.get("x-real-ip") || "").trim();
+  if (realIp) return realIp;
+  return "unknown";
 }
 
 function tooMany(message, retryAfter) {

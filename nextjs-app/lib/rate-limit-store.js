@@ -1,25 +1,61 @@
-// Penghitung bersama untuk rate limit & kuota.
+// Penghitung bersama untuk rate limit & kuota harian.
 //
 // Di hosting serverless, memori proses tidak dibagi antar instance dan ikut
 // hilang saat instance didaur ulang, sehingga counter in-memory hanya cadangan.
-// Bila salah satu pasangan env di bawah diisi, hitungan dilakukan di Redis
-// lewat REST (tanpa SDK, cukup fetch) sehingga batasnya berlaku global:
+// Karena itu hitungan disimpan di D1 (binding `DB`) yang dibagi semua instance
+// di semua lokasi, dengan satu perintah UPSERT atomik per permintaan:
 //
-//   UPSTASH_REDIS_REST_URL + UPSTASH_REDIS_REST_TOKEN
-//   KV_REST_API_URL + KV_REST_API_TOKEN      (Vercel KV)
+//   INSERT ... ON CONFLICT(bucket) DO UPDATE SET count = ..., reset_at = ...
 //
-// Tanpa keduanya modul ini memakai Map di memori dan mencetak peringatan.
+// Tabel dibuat sendiri saat pertama dipakai (CREATE TABLE IF NOT EXISTS),
+// jadi tidak perlu langkah migrasi manual. Bila binding D1 tidak ada atau
+// query gagal, modul ini gagal-terbuka ke Map memori dan mencatat peringatan
+// sekali per instance supaya pengguna tidak ikut terdampak.
 
-const REST_URL = (
-  process.env.UPSTASH_REDIS_REST_URL ||
-  process.env.KV_REST_API_URL ||
-  ""
-).replace(/\/+$/, "");
+const TABLE_SQL = `CREATE TABLE IF NOT EXISTS rate_limits (
+  bucket TEXT PRIMARY KEY,
+  count INTEGER NOT NULL,
+  reset_at INTEGER NOT NULL
+)`;
 
-const REST_TOKEN =
-  process.env.UPSTASH_REDIS_REST_TOKEN || process.env.KV_REST_API_TOKEN || "";
+const DB_LOOKUP_TTL_MS = 60_000;
 
-export const sharedStoreEnabled = Boolean(REST_URL && REST_TOKEN);
+let dbCache = { db: null, expires: 0 };
+let schemaPromise = null;
+let warnedNoStore = false;
+
+async function getDb() {
+  const now = Date.now();
+  if (dbCache.expires > now) return dbCache.db;
+
+  let db = null;
+  try {
+    const { getCloudflareContext } = await import("@opennextjs/cloudflare");
+    const context = await getCloudflareContext({ async: true });
+    db = context?.env?.DB ?? null;
+  } catch {
+    db = null;
+  }
+
+  dbCache = { db, expires: now + DB_LOOKUP_TTL_MS };
+  return db;
+}
+
+// Skema cukup dijalankan sekali per isolate; promise-nya dipakai bersama agar
+// permintaan yang datang bersamaan tidak menjalankan CREATE TABLE berulang.
+function ensureSchema(db) {
+  if (!schemaPromise) {
+    schemaPromise = (async () => {
+      await db.prepare(TABLE_SQL).run();
+      // Buang bucket yang sudah lewat masa berlakunya agar tabel tidak tumbuh.
+      await db.prepare("DELETE FROM rate_limits WHERE reset_at <= ?").bind(Date.now()).run();
+    })().catch((err) => {
+      schemaPromise = null;
+      throw err;
+    });
+  }
+  return schemaPromise;
+}
 
 const memoryBuckets = new Map();
 
@@ -50,33 +86,27 @@ function memoryConsume(key, limit, windowSeconds) {
   };
 }
 
-async function redisConsume(key, limit, windowSeconds) {
-  const res = await fetch(`${REST_URL}/pipeline`, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${REST_TOKEN}`,
-      "Content-Type": "application/json",
-    },
-    // INCR dulu, lalu EXPIRE NX (hanya pasang TTL bila belum ada), lalu TTL
-    // untuk menghitung Retry-After. Satu round-trip, atomik per perintah.
-    body: JSON.stringify([
-      ["INCR", key],
-      ["EXPIRE", key, windowSeconds, "NX"],
-      ["TTL", key],
-    ]),
-    cache: "no-store",
-  });
+async function d1Consume(db, key, limit, windowSeconds) {
+  await ensureSchema(db);
 
-  if (!res.ok) {
-    throw new Error(`Redis REST menolak permintaan (${res.status})`);
-  }
+  const now = Date.now();
+  const resetAt = now + windowSeconds * 1000;
 
-  const rows = await res.json();
-  const count = Number(rows?.[0]?.result);
-  const ttl = Number(rows?.[2]?.result);
+  const row = await db
+    .prepare(
+      `INSERT INTO rate_limits (bucket, count, reset_at) VALUES (?, 1, ?)
+       ON CONFLICT(bucket) DO UPDATE SET
+         count = CASE WHEN rate_limits.reset_at <= ? THEN 1 ELSE rate_limits.count + 1 END,
+         reset_at = CASE WHEN rate_limits.reset_at <= ? THEN ? ELSE rate_limits.reset_at END
+       RETURNING count, reset_at`
+    )
+    .bind(key, resetAt, now, now, resetAt)
+    .first();
 
-  if (!Number.isFinite(count)) {
-    throw new Error("Respons Redis REST tidak dikenali");
+  const count = Number(row?.count);
+  const storedReset = Number(row?.reset_at);
+  if (!Number.isFinite(count) || !Number.isFinite(storedReset)) {
+    throw new Error("Respons D1 tidak dikenali");
   }
 
   return {
@@ -84,29 +114,38 @@ async function redisConsume(key, limit, windowSeconds) {
     count,
     limit,
     remaining: Math.max(0, limit - count),
-    retryAfter: Number.isFinite(ttl) && ttl > 0 ? ttl : windowSeconds,
+    retryAfter: Math.max(1, Math.ceil((storedReset - now) / 1000)),
   };
 }
 
 /**
  * Menambah 1 hitungan pada `key` dan memeriksa apakah masih di bawah `limit`.
- * Gagal-terbuka: bila store bersama error, permintaan tetap dilayani dengan
- * counter memori (dicatat di log) supaya pengguna tidak ikut terdampak.
+ * Gagal-terbuka: bila D1 tidak tersedia atau error, permintaan tetap dilayani
+ * dengan counter memori (dicatat di log) supaya pengguna tidak ikut terdampak.
  */
 export async function consume(key, limit, windowSeconds) {
   if (!(limit > 0)) {
     return { allowed: true, count: 0, limit: 0, remaining: 0, retryAfter: 0 };
   }
 
-  if (sharedStoreEnabled) {
+  const db = await getDb();
+  if (db) {
     try {
-      return await redisConsume(key, limit, windowSeconds);
+      return await d1Consume(db, key, limit, windowSeconds);
     } catch (err) {
-      console.warn(
-        "[rate-limit] store bersama gagal, memakai memori:",
-        err && err.message ? err.message : err
-      );
+      if (!warnedNoStore) {
+        warnedNoStore = true;
+        console.warn(
+          "[rate-limit] D1 gagal, memakai memori:",
+          err && err.message ? err.message : err
+        );
+      }
     }
+  } else if (!warnedNoStore) {
+    warnedNoStore = true;
+    console.warn(
+      "[rate-limit] Binding D1 (DB) tidak tersedia; batas hanya berlaku per instance."
+    );
   }
 
   return memoryConsume(key, limit, windowSeconds);
