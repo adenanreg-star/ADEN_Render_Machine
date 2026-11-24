@@ -69,7 +69,15 @@ function imageFallbackHeader() {
 const RATE_LIMIT_MAX_REQUESTS = positiveInt(process.env.RATE_LIMIT_MAX_REQUESTS, 30);
 const RATE_LIMIT_WINDOW_SECONDS = positiveInt(process.env.RATE_LIMIT_WINDOW_SECONDS, 600);
 const DAILY_IMAGE_QUOTA = positiveInt(process.env.DAILY_IMAGE_QUOTA, 60);
+// Anggaran global harian: total render gambar lintas semua IP. Disimpan di D1
+// dengan bucket per tanggal UTC, jadi batas ini berlaku untuk seluruh aplikasi
+// dan tidak bisa diakali dengan berganti IP.
+const DAILY_IMAGE_BUDGET = positiveInt(process.env.DAILY_IMAGE_BUDGET, 300);
 const DAY_SECONDS = 24 * 60 * 60;
+// Gemini bisa menggantung tanpa jawaban; tanpa batas waktu request akan mati
+// bersama Worker tanpa pesan yang jelas. Bila lewat, jalur cadangan Cloudflare
+// tetap dicoba.
+const GEMINI_IMAGE_TIMEOUT_MS = positiveInt(process.env.GEMINI_IMAGE_TIMEOUT_SECONDS, 100) * 1000;
 
 const isPlainObject = (value) => !!value && typeof value === "object" && !Array.isArray(value);
 
@@ -79,10 +87,65 @@ const isPlainObject = (value) => !!value && typeof value === "object" && !Array.
 // dan sengaja diabaikan `x-forwarded-for` yang bisa dikirim klien sendiri.
 function getClientIp(req) {
   const connectingIp = (req.headers.get("cf-connecting-ip") || "").trim();
-  if (connectingIp) return connectingIp;
+  if (connectingIp) return normalizeIp(connectingIp);
   const realIp = (req.headers.get("x-real-ip") || "").trim();
-  if (realIp) return realIp;
+  if (realIp) return normalizeIp(realIp);
   return "unknown";
+}
+
+// Satu pengguna biasanya memegang satu blok IPv6 /64 dan bebas memakai alamat
+// apa pun di dalamnya, jadi IP dinormalisasi ke /64. Tanpa ini, batas per IP
+// bisa dilewati hanya dengan mengganti 64 bit terakhir alamat.
+function normalizeIp(value) {
+  let ip = (value || "").trim().toLowerCase();
+  if (!ip) return "unknown";
+
+  // Buang zone index (%eth0) dan port bila ada.
+  if (ip.includes("%")) ip = ip.split("%")[0];
+  const bracketed = ip.match(/^\[([^\]]+)\](?::\d+)?$/);
+  if (bracketed) ip = bracketed[1];
+  else if (/^\d{1,3}(\.\d{1,3}){3}:\d+$/.test(ip)) ip = ip.replace(/:\d+$/, "");
+
+  if (!ip.includes(":")) return ip;
+
+  // Alamat IPv4-mapped (::ffff:203.0.113.9) diperlakukan sebagai IPv4 biasa.
+  const mapped = ip.match(/^(.*:)(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/);
+  if (mapped) {
+    const octets = mapped[2].split(".").map(Number);
+    if (!octets.every((octet) => octet >= 0 && octet <= 255)) return ip;
+    if (mapped[1] === "::" || mapped[1] === "::ffff:") return octets.join(".");
+    ip = `${mapped[1]}${(((octets[0] << 8) | octets[1]) >>> 0).toString(16)}:${(
+      ((octets[2] << 8) | octets[3]) >>>
+      0
+    ).toString(16)}`;
+  }
+
+  const groups = expandIpv6(ip);
+  if (!groups) return ip;
+  // Buang nol di depan tiap hextet supaya penulisan berbeda (0db8 vs db8)
+  // tetap menghasilkan bucket yang sama.
+  const prefix = groups.slice(0, 4).map((group) => parseInt(group, 16).toString(16));
+  return `${prefix.join(":")}::/64`;
+}
+
+function expandIpv6(ip) {
+  const halves = ip.split("::");
+  if (halves.length > 2) return null;
+  const head = halves[0] ? halves[0].split(":") : [];
+  const tail = halves.length === 2 && halves[1] ? halves[1].split(":") : [];
+  const missing = 8 - head.length - tail.length;
+  if (missing < 0) return null;
+  if (halves.length === 1 && missing !== 0) return null;
+  const groups = [...head, ...Array(halves.length === 2 ? missing : 0).fill("0"), ...tail];
+  if (groups.length !== 8) return null;
+  if (!groups.every((group) => /^[0-9a-f]{1,4}$/.test(group))) return null;
+  return groups;
+}
+
+// Kunci tanggal UTC supaya anggaran global berganti tepat di tengah malam UTC
+// dan tidak bergantung pada zona waktu server.
+function utcDayKey(date = new Date()) {
+  return date.toISOString().slice(0, 10);
 }
 
 function tooMany(message, retryAfter) {
@@ -261,17 +324,6 @@ async function handlePost(req) {
 
   const ip = getClientIp(req);
 
-  // Dicek paling awal agar request sampah pun ikut terhitung.
-  const rate = await consume(`rl:${ip}`, RATE_LIMIT_MAX_REQUESTS, RATE_LIMIT_WINDOW_SECONDS);
-  if (!rate.allowed) {
-    return tooMany(
-      `Batas ${RATE_LIMIT_MAX_REQUESTS} permintaan per ${Math.round(
-        RATE_LIMIT_WINDOW_SECONDS / 60
-      )} menit tercapai. Coba lagi dalam ${rate.retryAfter} detik.`,
-      rate.retryAfter
-    );
-  }
-
   if (!(req.headers.get("content-type") || "").toLowerCase().startsWith("application/json")) {
     return fail("Content-Type harus application/json.", 415);
   }
@@ -294,6 +346,21 @@ async function handlePost(req) {
   if (!isPlainObject(body)) return fail("Body request tidak valid.", 400);
   if (!ALLOWED_MODELS.includes(body.model)) return fail("Model tidak diizinkan.", 400);
 
+  // Batas per IP dipisah antara teks dan gambar: render gambar jauh lebih mahal
+  // dan lambat, jadi pemakaian Scan/analisis teks tidak menghabiskan jatah
+  // render (dan sebaliknya). IP sudah dinormalisasi ke /64 untuk IPv6.
+  const isImageRequest = body.model === IMAGE_MODEL;
+  const rateBucket = isImageRequest ? `rl:img:${ip}` : `rl:txt:${ip}`;
+  const rate = await consume(rateBucket, RATE_LIMIT_MAX_REQUESTS, RATE_LIMIT_WINDOW_SECONDS);
+  if (!rate.allowed) {
+    return tooMany(
+      `Batas ${RATE_LIMIT_MAX_REQUESTS} permintaan ${isImageRequest ? "render gambar" : "teks"} per ${Math.round(
+        RATE_LIMIT_WINDOW_SECONDS / 60
+      )} menit tercapai. Coba lagi dalam ${rate.retryAfter} detik.`,
+      rate.retryAfter
+    );
+  }
+
   const sanitized = sanitizePayload(body.payload);
   if (sanitized.error) return fail(sanitized.error, 400);
 
@@ -306,14 +373,28 @@ async function handlePost(req) {
     return fail(`imageSize ${requestedImageSize} tidak diizinkan (maksimum ${MAX_IMAGE_SIZE}).`, 400);
   }
 
-  // Kuota render per IP. Dicek setelah payload valid supaya permintaan cacat
-  // tidak menghabiskan jatah, dan hanya untuk model gambar yang berbiaya.
-  if (body.model === IMAGE_MODEL) {
-    const quota = await consume(`quota:${ip}`, DAILY_IMAGE_QUOTA, DAY_SECONDS);
+  // Kuota render per IP, lalu anggaran global harian. Dicek setelah payload
+  // valid supaya permintaan cacat tidak menghabiskan jatah, dan hanya untuk
+  // model gambar yang berbiaya.
+  if (isImageRequest) {
+    const quota = await consume(`quota:img:${ip}`, DAILY_IMAGE_QUOTA, DAY_SECONDS);
     if (!quota.allowed) {
       return tooMany(
         `Kuota render harian (${DAILY_IMAGE_QUOTA} gambar / 24 jam) untuk IP ini sudah habis. Coba lagi dalam ${quota.retryAfter} detik.`,
         quota.retryAfter
+      );
+    }
+
+    // Jatah total aplikasi untuk hari ini (UTC), berlaku lintas semua IP.
+    const budget = await consume(
+      `budget:img:${utcDayKey()}`,
+      DAILY_IMAGE_BUDGET,
+      DAY_SECONDS
+    );
+    if (!budget.allowed) {
+      return tooMany(
+        `Anggaran render harian Aden Studio (${DAILY_IMAGE_BUDGET} gambar / hari) sudah habis. Coba lagi dalam ${budget.retryAfter} detik.`,
+        budget.retryAfter
       );
     }
   }
@@ -339,11 +420,22 @@ async function handlePost(req) {
   // secret dilewati.
   let geminiError = null;
   let geminiStatus = 502;
+  let geminiTimedOut = false;
+  // Batas waktu sendiri: bila Gemini menggantung, request dibatalkan dan jalur
+  // cadangan Cloudflare tetap dicoba. Signal klien tetap diteruskan.
+  const geminiAbort = new AbortController();
+  const geminiTimer = setTimeout(() => {
+    geminiTimedOut = true;
+    geminiAbort.abort();
+  }, GEMINI_IMAGE_TIMEOUT_MS);
+  const abortOnClientClose = () => geminiAbort.abort();
+  if (req.signal) req.signal.addEventListener("abort", abortOnClientClose);
   try {
     const response = await fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(sanitized.payload),
+      signal: geminiAbort.signal,
     });
 
     const data = await response.json().catch(() => null);
@@ -353,7 +445,12 @@ async function handlePost(req) {
     geminiStatus = response.status;
     geminiError = data?.error?.message || "Gemini API error";
   } catch (err) {
-    geminiError = err.message || "Internal server error";
+    geminiError = geminiTimedOut
+      ? `Gemini tidak merespons dalam ${Math.round(GEMINI_IMAGE_TIMEOUT_MS / 1000)} detik.`
+      : err.message || "Internal server error";
+  } finally {
+    clearTimeout(geminiTimer);
+    if (req.signal) req.signal.removeEventListener("abort", abortOnClientClose);
   }
 
   const failures = [geminiError];
