@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 
 import { generateTextWithFallback } from "../../../lib/ai-text-fallback.js";
+import { generateImageWithCloudflare } from "../../../lib/cloudflare-image.js";
 import { generateImageWithOpenAi } from "../../../lib/openai-image.js";
 import { consume, sharedStoreEnabled } from "../../../lib/rate-limit-store.js";
 
@@ -13,6 +14,8 @@ const MAX_BODY_BYTES = 4 * 1024 * 1024;
 const MAX_IMAGE_BASE64_CHARS = 2 * 1024 * 1024;
 const MAX_PROMPT_CHARS = 12000;
 const MAX_PARTS = 3;
+const MAX_FALLBACK_IMAGES = 4;
+const MAX_FALLBACK_IMAGE_CHARS = 900000;
 const IMAGE_MODEL = "gemini-nano-banana-2.1";
 
 const ALLOWED_MODELS = [
@@ -193,6 +196,37 @@ function sanitizePayload(payload) {
   return { payload: clean };
 }
 
+// Salinan gambar kecil khusus fallback Cloudflare Workers AI. Model gambar di
+// sana hanya menerima input < 512x512, sedangkan gambar untuk Gemini boleh
+// sampai 2048px, jadi frontend mengirim versi kecil terpisah di field ini.
+// Opsional: tanpa field ini fallback memakai inlineData asli apa adanya.
+function sanitizeFallbackImages(value) {
+  if (value === undefined) return { images: null };
+  if (!Array.isArray(value) || value.length === 0 || value.length > MAX_FALLBACK_IMAGES) {
+    return { error: `fallbackImages harus berisi 1-${MAX_FALLBACK_IMAGES} gambar.` };
+  }
+
+  const images = [];
+  for (const item of value) {
+    if (!isPlainObject(item)) return { error: "fallbackImages tidak valid." };
+    if (!ALLOWED_MIME_TYPES.includes(item.mimeType)) {
+      return { error: "Tipe fallbackImages tidak didukung (hanya PNG, JPEG, WEBP)." };
+    }
+    if (typeof item.data !== "string" || item.data.length === 0) {
+      return { error: "Data fallbackImages tidak valid." };
+    }
+    if (item.data.length > MAX_FALLBACK_IMAGE_CHARS) {
+      return { error: "Ukuran fallbackImages terlalu besar." };
+    }
+    if (!BASE64_PATTERN.test(item.data)) {
+      return { error: "Data fallbackImages bukan base64 yang valid." };
+    }
+    images.push({ mimeType: item.mimeType, data: item.data });
+  }
+
+  return { images };
+}
+
 export async function POST(req) {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) {
@@ -237,6 +271,9 @@ export async function POST(req) {
   const sanitized = sanitizePayload(body.payload);
   if (sanitized.error) return fail(sanitized.error, 400);
 
+  const fallbackImages = sanitizeFallbackImages(body.fallbackImages);
+  if (fallbackImages.error) return fail(fallbackImages.error, 400);
+
   // Batas ukuran gambar keluaran: 2K/4K jauh lebih mahal daripada 1K.
   const requestedImageSize = sanitized.payload.generationConfig?.imageConfig?.imageSize;
   if (requestedImageSize && IMAGE_SIZE_RANK[requestedImageSize] > IMAGE_SIZE_RANK[MAX_IMAGE_SIZE]) {
@@ -271,8 +308,9 @@ export async function POST(req) {
 
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${body.model}:generateContent?key=${encodeURIComponent(apiKey)}`;
 
-  // Model gambar: Gemini tetap utama, OpenAI menjadi cadangan bila Gemini
-  // menolak (misalnya 429 karena kuota gambar free tier habis).
+  // Model gambar: Gemini tetap utama, lalu OpenAI, lalu Cloudflare Workers AI
+  // bila penyedia sebelumnya menolak (misalnya 429 karena kuota gambar free
+  // tier habis atau saldo OpenAI kosong). Penyedia tanpa secret dilewati.
   let geminiError = null;
   let geminiStatus = 502;
   try {
@@ -292,23 +330,47 @@ export async function POST(req) {
     geminiError = err.message || "Internal server error";
   }
 
+  const failures = [geminiError];
+  let fallbackUsed = false;
+
   const openAiKey = process.env.OPENAI_API_KEY;
-  if (!openAiKey) {
-    return NextResponse.json({ error: geminiError }, { status: geminiStatus });
+  if (openAiKey) {
+    fallbackUsed = true;
+    const fallback = await generateImageWithOpenAi({
+      payload: sanitized.payload,
+      apiKey: openAiKey,
+      signal: req.signal,
+    });
+    if (!fallback.error) {
+      return NextResponse.json(fallback.data, {
+        headers: { "x-ai-provider": fallback.provider },
+      });
+    }
+    failures.push(`openai: ${fallback.error}`);
   }
 
-  const fallback = await generateImageWithOpenAi({
-    payload: sanitized.payload,
-    apiKey: openAiKey,
-    signal: req.signal,
-  });
-  if (fallback.error) {
-    return NextResponse.json(
-      { error: `${geminiError} | openai: ${fallback.error}` },
-      { status: 502 }
-    );
+  const cfAccountId = process.env.CF_ACCOUNT_ID;
+  const cfApiToken = process.env.CF_API_TOKEN;
+  if (cfAccountId && cfApiToken) {
+    fallbackUsed = true;
+    const fallback = await generateImageWithCloudflare({
+      payload: sanitized.payload,
+      images: fallbackImages.images,
+      accountId: cfAccountId,
+      apiToken: cfApiToken,
+      signal: req.signal,
+    });
+    if (!fallback.error) {
+      return NextResponse.json(fallback.data, {
+        headers: { "x-ai-provider": fallback.provider },
+      });
+    }
+    failures.push(`cloudflare: ${fallback.error}`);
   }
-  return NextResponse.json(fallback.data, {
-    headers: { "x-ai-provider": fallback.provider },
-  });
+
+  // Tanpa satu pun secret cadangan, kembalikan error Gemini apa adanya.
+  if (!fallbackUsed) {
+    return NextResponse.json({ error: geminiError }, { status: geminiStatus });
+  }
+  return NextResponse.json({ error: failures.join(" | ") }, { status: 502 });
 }

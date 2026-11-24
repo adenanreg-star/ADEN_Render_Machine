@@ -379,7 +379,47 @@
       });
     }
 
-    async function callGeminiProxy({ model, payload, signal }) {
+    // FLUX.2 [klein] di Cloudflare Workers AI (cadangan gambar terakhir) hanya
+    // menerima gambar input lebih kecil dari 512x512, sedangkan foto untuk
+    // Gemini boleh sampai 2048px. Jadi salinan kecil dibuat di sini dan dikirim
+    // terpisah sebagai fallbackImages; Gemini/OpenAI tetap memakai foto asli.
+    const FALLBACK_IMAGE_MAX_SIDE = 480;
+
+    function makeFallbackImagePart(dataUrl, kind) {
+      return new Promise((resolve) => {
+        const img = new Image();
+        img.onload = () => {
+          const w = img.naturalWidth || 0;
+          const h = img.naturalHeight || 0;
+          if (!w || !h) return resolve(null);
+
+          const scale = Math.min(1, FALLBACK_IMAGE_MAX_SIDE / Math.max(w, h));
+          const targetW = Math.max(1, Math.round(w * scale));
+          const targetH = Math.max(1, Math.round(h * scale));
+          const canvas = document.createElement("canvas");
+          canvas.width = targetW;
+          canvas.height = targetH;
+          const ctx = canvas.getContext("2d");
+          ctx.imageSmoothingQuality = "high";
+          ctx.drawImage(img, 0, 0, targetW, targetH);
+
+          // Mask harus tetap PNG agar area transparan tidak ikut jadi hitam.
+          const out = kind === "mask"
+            ? canvas.toDataURL("image/png")
+            : canvas.toDataURL("image/jpeg", UPLOAD_JPEG_QUALITY);
+          try {
+            const { mimeType, data } = parseDataUrl(out);
+            resolve({ mimeType, data });
+          } catch {
+            resolve(null);
+          }
+        };
+        img.onerror = () => resolve(null);
+        img.src = dataUrl;
+      });
+    }
+
+    async function callGeminiProxy({ model, payload, fallbackImages, signal }) {
       const controller = new AbortController();
       let timedOut = false;
 
@@ -395,10 +435,14 @@
       }
 
       try {
+        const requestBody = { model, payload };
+        if (fallbackImages && fallbackImages.length) {
+          requestBody.fallbackImages = fallbackImages;
+        }
         const res = await fetch("/api/gemini", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ model, payload }),
+          body: JSON.stringify(requestBody),
           signal: controller.signal
         });
         const data = await res.json().catch(() => ({}));
@@ -465,7 +509,20 @@
         body.generationConfig.seed = Number(seed);
       }
 
-      const json = await callGeminiProxy({ model: "gemini-nano-banana-2.1", payload: body, signal });
+      // Salinan kecil untuk fallback Cloudflare (input wajib < 512x512).
+      const fallbackImages = (
+        await Promise.all([
+          makeFallbackImagePart(referenceDataUrl, "photo"),
+          overlayMaskDataUrl ? makeFallbackImagePart(overlayMaskDataUrl, "mask") : Promise.resolve(null)
+        ])
+      ).filter(Boolean);
+
+      const json = await callGeminiProxy({
+        model: "gemini-nano-banana-2.1",
+        payload: body,
+        fallbackImages,
+        signal
+      });
       const candidateParts = json.candidates?.[0]?.content?.parts || [];
       const imgPart = candidateParts.find((p) => p.inlineData && p.inlineData.data);
       if (!imgPart) {
