@@ -180,7 +180,7 @@ export async function generateTextWithFallback({ payload, apiKey, signal }) {
             headers: {
               Authorization: `Bearer ${openRouterKey}`,
               "HTTP-Referer": process.env.APP_ORIGIN || "https://freebuff.site",
-              "X-Title": "ArchiRender Studio AI",
+              "X-Title": "Aden Studio",
             },
             model,
             contents,
