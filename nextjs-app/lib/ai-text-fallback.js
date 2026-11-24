@@ -5,14 +5,18 @@
 //   2. gemini-3.1-flash-lite        (cadangan Gemini)
 //   3. Groq  (Qwen vision)          (butuh GROQ_API_KEY)
 //   4. OpenRouter free models       (butuh OPENROUTER_API_KEY)
+//   5. OpenAI (gpt-6.1-terra)       (butuh OPENAI_API_KEY)
 //
 // Penyedia tanpa API key otomatis dilewati. Semua balasan dinormalkan ke bentuk
 // respons Gemini ({ candidates[0].content.parts[0].text }) supaya frontend tidak
 // perlu tahu penyedia mana yang menjawab.
 
+import { DEFAULT_OPENAI_TEXT_MODEL, OPENAI_API_BASE } from "./openai-models.js";
+
 const GEMINI_TEXT_MODELS = ["gemini-3.5-flash-lite", "gemini-3.1-flash-lite"];
 const GROQ_MODELS = ["qwen/qwen3.8-27b"];
 const OPENROUTER_MODELS = ["nvidia/nemotron-3.5-super-vl:free", "google/gemma-4-31b-it:free"];
+const OPENAI_MODELS = [(process.env.OPENAI_TEXT_MODEL || "").trim() || DEFAULT_OPENAI_TEXT_MODEL];
 
 const ATTEMPT_TIMEOUT_MS = 25000;
 const GROQ_URL = "https://api.groq.com/openai/v1/chat/completions";
@@ -146,6 +150,7 @@ export async function generateTextWithFallback({ payload, apiKey, signal }) {
   const temperature = payload.generationConfig?.temperature;
   const groqKey = process.env.GROQ_API_KEY;
   const openRouterKey = process.env.OPENROUTER_API_KEY;
+  const openAiKey = process.env.OPENAI_API_KEY;
 
   const attempts = [];
   if (apiKey) {
@@ -185,6 +190,23 @@ export async function generateTextWithFallback({ payload, apiKey, signal }) {
             model,
             contents,
             temperature,
+            signal,
+          })
+        )
+      );
+    }
+  }
+  if (openAiKey) {
+    for (const model of OPENAI_MODELS) {
+      attempts.push(() =>
+        attempt(`openai:${model}`, () =>
+          callOpenAiCompatible({
+            url: `${OPENAI_API_BASE}/chat/completions`,
+            headers: { Authorization: `Bearer ${openAiKey}` },
+            model,
+            contents,
+            // Model reasoning OpenAI tidak selalu menerima temperature dari
+            // payload Gemini, jadi parameter ini sengaja tidak diteruskan.
             signal,
           })
         )

@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 
 import { generateTextWithFallback } from "../../../lib/ai-text-fallback.js";
+import { generateImageWithOpenAi } from "../../../lib/openai-image.js";
 import { consume, sharedStoreEnabled } from "../../../lib/rate-limit-store.js";
 
 // ---------------------------------------------------------------------------
@@ -270,6 +271,10 @@ export async function POST(req) {
 
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${body.model}:generateContent?key=${encodeURIComponent(apiKey)}`;
 
+  // Model gambar: Gemini tetap utama, OpenAI menjadi cadangan bila Gemini
+  // menolak (misalnya 429 karena kuota gambar free tier habis).
+  let geminiError = null;
+  let geminiStatus = 502;
   try {
     const response = await fetch(url, {
       method: "POST",
@@ -278,14 +283,32 @@ export async function POST(req) {
     });
 
     const data = await response.json().catch(() => null);
-    if (!response.ok) {
-      return NextResponse.json(
-        { error: data?.error?.message || "Gemini API error" },
-        { status: response.status }
-      );
+    if (response.ok) {
+      return NextResponse.json(data);
     }
-    return NextResponse.json(data);
+    geminiStatus = response.status;
+    geminiError = data?.error?.message || "Gemini API error";
   } catch (err) {
-    return NextResponse.json({ error: err.message || "Internal server error" }, { status: 502 });
+    geminiError = err.message || "Internal server error";
   }
+
+  const openAiKey = process.env.OPENAI_API_KEY;
+  if (!openAiKey) {
+    return NextResponse.json({ error: geminiError }, { status: geminiStatus });
+  }
+
+  const fallback = await generateImageWithOpenAi({
+    payload: sanitized.payload,
+    apiKey: openAiKey,
+    signal: req.signal,
+  });
+  if (fallback.error) {
+    return NextResponse.json(
+      { error: `${geminiError} | openai: ${fallback.error}` },
+      { status: 502 }
+    );
+  }
+  return NextResponse.json(fallback.data, {
+    headers: { "x-ai-provider": fallback.provider },
+  });
 }
