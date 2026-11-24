@@ -44,6 +44,26 @@ const positiveInt = (value, fallback) => {
 const CONFIGURED_IMAGE_SIZE = (process.env.MAX_IMAGE_SIZE || "").trim().toUpperCase();
 const MAX_IMAGE_SIZE = IMAGE_SIZE_RANK[CONFIGURED_IMAGE_SIZE] === undefined ? "1K" : CONFIGURED_IMAGE_SIZE;
 
+// ---------------------------------------------------------------------------
+// Status penyedia cadangan gambar, dikirim sebagai header di setiap respons.
+// Hanya menandai ada/tidaknya secret, tidak pernah nilainya, supaya jelas
+// apakah CF_ACCOUNT_ID dan CF_API_TOKEN sudah menempel di environment ini.
+// ---------------------------------------------------------------------------
+const envIsSet = (name) => (process.env[name] || "").trim().length > 0;
+
+function imageFallbackHeader() {
+  const accountId = envIsSet("CF_ACCOUNT_ID");
+  const apiToken = envIsSet("CF_API_TOKEN");
+  const cloudflare = accountId && apiToken ? "ready" : accountId || apiToken ? "incomplete" : "missing";
+  return [
+    `gemini=${envIsSet("GEMINI_API_KEY") ? "ready" : "missing"}`,
+    `openai=${envIsSet("OPENAI_API_KEY") ? "ready" : "missing"}`,
+    `cloudflare=${cloudflare}`,
+    `cf-account-id=${accountId ? "set" : "unset"}`,
+    `cf-api-token=${apiToken ? "set" : "unset"}`,
+  ].join(", ");
+}
+
 if (!sharedStoreEnabled) {
   console.warn(
     "[api/gemini] Store bersama belum dikonfigurasi (UPSTASH_REDIS_REST_URL/TOKEN atau KV_REST_API_URL/TOKEN); batas hanya berlaku per instance."
@@ -227,7 +247,15 @@ function sanitizeFallbackImages(value) {
   return { images };
 }
 
+// Status penyedia ikut di setiap respons (header) agar konfigurasi cadangan
+// gambar bisa diperiksa tanpa memanggil model sama sekali.
 export async function POST(req) {
+  const response = await handlePost(req);
+  response.headers.set("x-ai-image-fallbacks", imageFallbackHeader());
+  return response;
+}
+
+async function handlePost(req) {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) {
     return fail("GEMINI_API_KEY belum dikonfigurasi di server.", 500);
