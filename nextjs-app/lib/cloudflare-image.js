@@ -67,6 +67,34 @@ function base64ToBytes(base64) {
   return bytes;
 }
 
+// Model bisa membalas JPEG walau header/JSON-nya tidak menyebut tipe. Klien
+// memakai mimeType ini untuk menyusun data URL, jadi tipenya dideteksi dari
+// magic bytes agar tidak salah label.
+function sniffMimeType(bytes) {
+  if (bytes.length >= 4 && bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47) {
+    return "image/png";
+  }
+  if (bytes.length >= 4 && bytes[0] === 0x52 && bytes[1] === 0x49 && bytes[2] === 0x46 && bytes[3] === 0x46 &&
+      bytes.length >= 12 && bytes[8] === 0x57 && bytes[9] === 0x45 && bytes[10] === 0x42 && bytes[11] === 0x50) {
+    return "image/webp";
+  }
+  if (bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) {
+    return "image/jpeg";
+  }
+  if (bytes.length >= 6 && bytes[0] === 0x47 && bytes[1] === 0x49 && bytes[2] === 0x46) {
+    return "image/gif";
+  }
+  return "image/png";
+}
+
+function sniffMimeTypeFromBase64(base64) {
+  try {
+    return sniffMimeType(base64ToBytes(base64.slice(0, 64)));
+  } catch {
+    return "image/png";
+  }
+}
+
 function toGeminiImageShape(base64, mimeType) {
   return {
     candidates: [
@@ -181,8 +209,10 @@ export async function generateImageWithCloudflare({ payload, images: preparedIma
 
     // Sebagian model gambar Workers AI mengembalikan byte gambar langsung.
     if (contentType.startsWith("image/")) {
-      const base64 = await toBase64(await res.arrayBuffer());
-      return { data: toGeminiImageShape(base64, contentType.split(";")[0]), provider: `cloudflare:${model}` };
+      const buffer = await res.arrayBuffer();
+      const base64 = await toBase64(buffer);
+      const mimeType = sniffMimeType(new Uint8Array(buffer));
+      return { data: toGeminiImageShape(base64, mimeType), provider: `cloudflare:${model}` };
     }
 
     const data = await res.json().catch(() => null);
@@ -193,8 +223,9 @@ export async function generateImageWithCloudflare({ payload, images: preparedIma
       null;
 
     if (!image) throw new Error(errorMessage(data, res.status));
+    const cleaned = image.replace(/^data:image\/\w+;base64,/, "");
     return {
-      data: toGeminiImageShape(image.replace(/^data:image\/\w+;base64,/, ""), "image/png"),
+      data: toGeminiImageShape(cleaned, sniffMimeTypeFromBase64(cleaned)),
       provider: `cloudflare:${model}`,
     };
   } catch (err) {
