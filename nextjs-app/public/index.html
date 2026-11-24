@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>ArchiRender Studio AI — Architectural Presentation & Visualization</title>
+  <title>Aden Studio</title>
   <link rel="icon" href="/favicon.ico" sizes="any" />
   <script src="https://cdn.tailwindcss.com"></script>
   <script>
@@ -382,7 +382,7 @@
     // FLUX.2 [klein] di Cloudflare Workers AI (cadangan gambar terakhir) hanya
     // menerima gambar input lebih kecil dari 512x512, sedangkan foto untuk
     // Gemini boleh sampai 2048px. Jadi salinan kecil dibuat di sini dan dikirim
-    // terpisah sebagai fallbackImages; Gemini/OpenAI tetap memakai foto asli.
+    // terpisah sebagai fallbackImages; Gemini tetap memakai foto asli.
     const FALLBACK_IMAGE_MAX_SIDE = 480;
 
     function makeFallbackImagePart(dataUrl, kind) {
