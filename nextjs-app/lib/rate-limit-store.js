@@ -118,6 +118,50 @@ async function d1Consume(db, key, limit, windowSeconds) {
   };
 }
 
+function usageShape(count, limit, resetAt) {
+  const now = Date.now();
+  const active = Number.isFinite(count) && count > 0 ? Math.floor(count) : 0;
+  return {
+    count: active,
+    limit,
+    remaining: Math.max(0, limit - active),
+    retryAfter: active > 0 && resetAt > now ? Math.max(1, Math.ceil((resetAt - now) / 1000)) : 0,
+  };
+}
+
+/**
+ * Membaca sisa jatah pada `key` TANPA menambah hitungan. Dipakai untuk
+ * menampilkan sisa kuota ke pengguna sebelum mereka memakai jatah terakhir.
+ * Sama seperti `consume`, bila D1 tidak tersedia dipakai counter memori.
+ */
+export async function peek(key, limit) {
+  if (!(limit > 0)) {
+    return { count: 0, limit: 0, remaining: 0, retryAfter: 0 };
+  }
+
+  const db = await getDb();
+  if (db) {
+    try {
+      await ensureSchema(db);
+      const row = await db
+        .prepare("SELECT count, reset_at FROM rate_limits WHERE bucket = ?")
+        .bind(key)
+        .first();
+      const count = Number(row?.count);
+      const storedReset = Number(row?.reset_at);
+      if (row && (!Number.isFinite(count) || !Number.isFinite(storedReset))) {
+        throw new Error("Respons D1 tidak dikenali");
+      }
+      return usageShape(storedReset > Date.now() ? count : 0, limit, storedReset);
+    } catch {
+      // Info sisa jatah bersifat tambahan: lanjut ke counter memori.
+    }
+  }
+
+  const bucket = memoryBuckets.get(key);
+  return usageShape(bucket ? bucket.count : 0, limit, bucket ? bucket.reset : 0);
+}
+
 /**
  * Menambah 1 hitungan pada `key` dan memeriksa apakah masih di bawah `limit`.
  * Gagal-terbuka: bila D1 tidak tersedia atau error, permintaan tetap dilayani

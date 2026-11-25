@@ -10,6 +10,8 @@
 // respons Gemini ({ candidates[0].content.parts[0].text }) supaya frontend tidak
 // perlu tahu penyedia mana yang menjawab.
 
+import { geminiApiBaseUrl } from "./gemini-endpoint.js";
+
 const GEMINI_TEXT_MODELS = ["gemini-3.5-flash-lite", "gemini-3.1-flash-lite"];
 const GROQ_MODELS = ["qwen/qwen3.8-27b"];
 const OPENROUTER_MODELS = ["nvidia/nemotron-3.5-super-vl:free", "google/gemma-4-31b-it:free"];
@@ -78,7 +80,7 @@ async function attempt(label, run) {
 }
 
 async function callGemini(model, payload, apiKey, signal) {
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(apiKey)}`;
+  const url = `${geminiApiBaseUrl()}/models/${model}:generateContent?key=${encodeURIComponent(apiKey)}`;
   const guard = withTimeout(signal);
   try {
     const res = await fetch(url, {

@@ -419,6 +419,44 @@
       });
     }
 
+    // Sisa jatah render dibaca dari header respons /api/gemini lalu dibagikan
+    // lewat event, sehingga badge di header selalu menampilkan sisa kuota per IP
+    // dan anggaran harian sebelum pengguna kena 429.
+    function publishRenderUsage(res) {
+      const numberHeader = (name) => {
+        const raw = res.headers.get(name);
+        if (raw === null || raw === "") return null;
+        const value = Number(raw);
+        return Number.isFinite(value) ? value : null;
+      };
+
+      const quotaRemaining = numberHeader("x-render-quota-remaining");
+      const budgetRemaining = numberHeader("x-render-budget-remaining");
+      if (quotaRemaining === null && budgetRemaining === null) return;
+
+      window.dispatchEvent(
+        new CustomEvent("aden-render-usage", {
+          detail: {
+            quotaRemaining,
+            quotaLimit: numberHeader("x-render-quota-limit"),
+            quotaResetSeconds: numberHeader("x-render-quota-retry-after"),
+            budgetRemaining,
+            budgetLimit: numberHeader("x-render-budget-limit"),
+            budgetResetSeconds: numberHeader("x-render-budget-retry-after"),
+          },
+        })
+      );
+    }
+
+    async function refreshRenderUsage() {
+      try {
+        const res = await fetch("/api/gemini", { headers: { Accept: "application/json" } });
+        if (res.ok) publishRenderUsage(res);
+      } catch {
+        // Info jatah bersifat tambahan; gagal memuat tidak menghalangi render.
+      }
+    }
+
     async function callGeminiProxy({ model, payload, fallbackImages, signal }) {
       const controller = new AbortController();
       let timedOut = false;
@@ -445,6 +483,7 @@
           body: JSON.stringify(requestBody),
           signal: controller.signal
         });
+        publishRenderUsage(res);
         const data = await res.json().catch(() => ({}));
         if (!res.ok) {
           throw new Error(data?.error || `Permintaan ke server gagal (${res.status}).`);
@@ -716,6 +755,7 @@
       const [compareTarget, setCompareTarget] = useState("input"); // input | prevOutput
       const [isGenerating, setIsGenerating] = useState(false);
       const [toast, setToast] = useState(null);
+      const [renderUsage, setRenderUsage] = useState(null);
       const [showPromptModal, setShowPromptModal] = useState(false);
       const [copiedPrompt, setCopiedPrompt] = useState(false);
 
@@ -746,6 +786,16 @@
       const [workingHydrated, setWorkingHydrated] = useState(false);
       const restoredWorkingRef = useRef(null);
       const bootstrappedRef = useRef(false);
+
+      // Sisa kuota render & anggaran harian dari header server (lihat badge
+      // di header aplikasi). Diperbarui tiap respons render dan saat halaman
+      // dibuka lewat GET /api/gemini.
+      useEffect(() => {
+        const onUsage = (event) => setRenderUsage(event.detail);
+        window.addEventListener("aden-render-usage", onUsage);
+        refreshRenderUsage();
+        return () => window.removeEventListener("aden-render-usage", onUsage);
+      }, []);
 
       // Muat riwayat tersimpan sekali di awal, lalu simpan tiap perubahan.
       useEffect(() => {
@@ -1210,6 +1260,17 @@ CRITICAL LOCK: Keep the exact building geometry, camera angle, framing, and all 
                 <Icons.Code className="w-3.5 h-3.5 text-amber-400" />
                 <span>Script Prompt</span>
               </button>
+              {renderUsage && (
+                <div
+                  title={`Sisa kuota render per IP: ${renderUsage.quotaRemaining ?? "-"}/${renderUsage.quotaLimit ?? "-"} · Sisa anggaran harian Aden Studio: ${renderUsage.budgetRemaining ?? "-"}/${renderUsage.budgetLimit ?? "-"} · jatah dihitung per 24 jam bergulir dan anggaran berganti tiap tengah malam UTC`}
+                  className="hidden sm:flex items-center gap-1.5 px-2 sm:px-3 py-1.5 rounded-lg bg-amber-500/10 text-amber-300 text-xs font-medium border border-amber-500/30"
+                >
+                  <Icons.Sparkles className="w-3.5 h-3.5" />
+                  <span>Sisa render {renderUsage.quotaRemaining ?? "-"}/{renderUsage.quotaLimit ?? "-"}</span>
+                  <span className="text-amber-500/50">·</span>
+                  <span>Anggaran {renderUsage.budgetRemaining ?? "-"}/{renderUsage.budgetLimit ?? "-"}</span>
+                </div>
+              )}
               <div className="px-2 sm:px-3 py-1.5 rounded-lg bg-emerald-500/10 text-emerald-300 text-xs font-medium flex items-center gap-1.5 border border-emerald-500/30">
                 <Icons.Lock className="w-3.5 h-3.5" />
                 <span className="hidden sm:inline">API Key di Server</span>

@@ -2,7 +2,8 @@ import { NextResponse } from "next/server";
 
 import { generateTextWithFallback } from "../../../lib/ai-text-fallback.js";
 import { generateImageWithCloudflare } from "../../../lib/cloudflare-image.js";
-import { consume } from "../../../lib/rate-limit-store.js";
+import { geminiApiBaseUrl } from "../../../lib/gemini-endpoint.js";
+import { consume, peek } from "../../../lib/rate-limit-store.js";
 
 // ---------------------------------------------------------------------------
 // Batas keras untuk endpoint publik ini.
@@ -146,6 +147,25 @@ function expandIpv6(ip) {
 // dan tidak bergantung pada zona waktu server.
 function utcDayKey(date = new Date()) {
   return date.toISOString().slice(0, 10);
+}
+
+// Sisa jatah render dikirim sebagai header pada setiap respons yang menyentuh
+// kuota, sehingga klien bisa menampilkan sisa kuota per IP dan anggaran harian
+// tanpa permintaan tambahan. Nilai `null` berarti belum dihitung pada request
+// tersebut (mis. permintaan teks atau body yang ditolak lebih awal).
+function applyUsageHeaders(response, usage) {
+  if (usage.quota) {
+    response.headers.set("x-render-quota-limit", String(usage.quota.limit));
+    response.headers.set("x-render-quota-remaining", String(usage.quota.remaining));
+    response.headers.set("x-render-quota-retry-after", String(usage.quota.retryAfter));
+  }
+  if (usage.budget) {
+    response.headers.set("x-render-budget-limit", String(usage.budget.limit));
+    response.headers.set("x-render-budget-remaining", String(usage.budget.remaining));
+    response.headers.set("x-render-budget-retry-after", String(usage.budget.retryAfter));
+    response.headers.set("x-render-budget-date", utcDayKey());
+  }
+  return response;
 }
 
 function tooMany(message, retryAfter) {
@@ -311,12 +331,43 @@ function sanitizeFallbackImages(value) {
 // Status penyedia ikut di setiap respons (header) agar konfigurasi cadangan
 // gambar bisa diperiksa tanpa memanggil model sama sekali.
 export async function POST(req) {
-  const response = await handlePost(req);
+  const usage = {};
+  const response = await handlePost(req, usage);
   response.headers.set("x-ai-image-fallbacks", imageFallbackHeader());
-  return response;
+  return applyUsageHeaders(response, usage);
 }
 
-async function handlePost(req) {
+// Status sisa jatah tanpa memakai kuota. Dipakai UI untuk menampilkan sisa
+// render dan anggaran harian saat halaman dibuka (sebelum render pertama).
+export async function GET(req) {
+  const ip = getClientIp(req);
+  const [quota, budget] = await Promise.all([
+    peek(`quota:img:${ip}`, DAILY_IMAGE_QUOTA),
+    peek(`budget:img:${utcDayKey()}`, DAILY_IMAGE_BUDGET),
+  ]);
+
+  const response = NextResponse.json(
+    {
+      quota: {
+        limit: quota.limit,
+        remaining: quota.remaining,
+        resetInSeconds: quota.retryAfter,
+        windowSeconds: DAY_SECONDS,
+      },
+      budget: {
+        limit: budget.limit,
+        remaining: budget.remaining,
+        resetInSeconds: budget.retryAfter,
+        date: utcDayKey(),
+      },
+    },
+    { headers: { "Cache-Control": "no-store" } }
+  );
+  response.headers.set("x-ai-image-fallbacks", imageFallbackHeader());
+  return applyUsageHeaders(response, { quota, budget });
+}
+
+async function handlePost(req, usage) {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) {
     return fail("GEMINI_API_KEY belum dikonfigurasi di server.", 500);
@@ -378,6 +429,7 @@ async function handlePost(req) {
   // model gambar yang berbiaya.
   if (isImageRequest) {
     const quota = await consume(`quota:img:${ip}`, DAILY_IMAGE_QUOTA, DAY_SECONDS);
+    usage.quota = quota;
     if (!quota.allowed) {
       return tooMany(
         `Kuota render harian (${DAILY_IMAGE_QUOTA} gambar / 24 jam) untuk IP ini sudah habis. Coba lagi dalam ${quota.retryAfter} detik.`,
@@ -391,6 +443,7 @@ async function handlePost(req) {
       DAILY_IMAGE_BUDGET,
       DAY_SECONDS
     );
+    usage.budget = budget;
     if (!budget.allowed) {
       return tooMany(
         `Anggaran render harian Aden Studio (${DAILY_IMAGE_BUDGET} gambar / hari) sudah habis. Coba lagi dalam ${budget.retryAfter} detik.`,
@@ -413,7 +466,7 @@ async function handlePost(req) {
     });
   }
 
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${body.model}:generateContent?key=${encodeURIComponent(apiKey)}`;
+  const url = `${geminiApiBaseUrl()}/models/${body.model}:generateContent?key=${encodeURIComponent(apiKey)}`;
 
   // Model gambar: Gemini tetap utama, lalu Cloudflare Workers AI bila Gemini
   // menolak (misalnya 429 karena kuota gambar free tier habis). Penyedia tanpa
